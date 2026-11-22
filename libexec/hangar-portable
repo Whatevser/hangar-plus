@@ -127,9 +127,13 @@ if [ "$#" -gt 0 ] && [ "$1" = "iso" ]; then
         echo "Refusing to overwrite: $output" >&2
         exit 1
     fi
-    # Temporary image is on the same filesystem as the destination.
-    # Hard-link creation refuses an existing filename atomically.
-    ln -- "$work/data.iso" "$output"
+    # The temporary image sits on the destination filesystem. Avoid
+    # overwriting existing files (and work on filesystems without hard links).
+    mv -n -- "$work/data.iso" "$output"
+    if [ -e "$work/data.iso" ]; then
+        echo "Refusing to overwrite: $output" >&2
+        exit 1
+    fi
     echo "ISO created: $output"
     exit 0
 fi
