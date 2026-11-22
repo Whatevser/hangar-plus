@@ -79,11 +79,20 @@ def check_host(kernel, output):
     return True
 
 
+def within(root, name):
+    """Do not mistake a snapshot symlink into / for a file inside staging."""
+    try:
+        return (root / name).resolve(strict=True).is_relative_to(root.resolve(strict=True))
+    except (OSError, RuntimeError):
+        return False
+
+
 def check_snapshot_root(root, kernel):
     """Reject home-only backups and mismatched OS/modules before touching files."""
     if (root / "etc").is_symlink() or not (root / "etc").is_dir():
         fail("Snapshot must contain a real /etc directory from a full system.")
-    if not (root / "usr/lib/systemd/systemd").is_file():
+    if not within(root, "usr/lib/systemd/systemd") or not (
+            root / "usr/lib/systemd/systemd").is_file():
         fail("Snapshot lacks systemd. Use a complete Linux system snapshot, not /home.")
     snapshot_release = read_os_release(root / "usr/lib/os-release")
     host_release = read_os_release(Path("/usr/lib/os-release"))
@@ -91,14 +100,18 @@ def check_snapshot_root(root, kernel):
             snapshot_release.get(k) != host_release.get(k) for k in ("ID", "VERSION_ID")):
         fail("Snapshot OS release differs from the current machine. "
              "This experiment only boots snapshots of the same OS version.")
-    if not (root / "usr/lib/modules" / kernel).is_dir() and not (
-            root / "lib/modules" / kernel).is_dir():
+    if not any(within(root, Path(base) / kernel) and
+               (root / base / kernel).is_dir()
+               for base in ("usr/lib/modules", "lib/modules")):
         fail("Snapshot lacks kernel modules for current kernel " + kernel +
              ". A matching kernel/modules pair is required.")
     # Avoid writing to a host file via a symlink extracted from the repository.
     for name in ("fstab", "crypttab"):
         if (root / "etc" / name).is_symlink():
             fail("Refusing to replace symlinked /etc/" + name + " in restored snapshot.")
+    systemd = root / "etc/systemd/system"
+    if systemd.is_dir() and not within(root, "etc/systemd/system"):
+        fail("Snapshot systemd unit directory escapes its temporary restore root.")
     return True
 
 
@@ -112,7 +125,7 @@ def prepare_live_root(root):
         encoding="utf-8")
     # Disable Hangar's recurring tasks inside the live copy, not on the host.
     systemd = root / "etc/systemd/system"
-    if systemd.is_dir() and not systemd.is_symlink():
+    if systemd.is_dir() and within(root, "etc/systemd/system"):
         for path in systemd.glob("hangar-*.timer"):
             if path.is_file() or path.is_symlink():
                 path.unlink()
