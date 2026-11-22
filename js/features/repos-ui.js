@@ -1325,7 +1325,12 @@
             },
 
             fields() {
-                return fieldsFor(this.kind);
+                const fields = fieldsFor(this.kind);
+                // The existing repository path is chosen through the normal
+                // folder picker; no ZIP, ISO, or browser-upload step involved.
+                return this.mode === 'import'
+                    ? fields.map((f) => f.name === 'path' ? Object.assign({}, f, { browse: 'dir' }) : f)
+                    : fields;
             },
 
             // --- the size limit --------------------------------------------
