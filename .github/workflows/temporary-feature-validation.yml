@@ -14,3 +14,5 @@ jobs:
       - run: node --check js/features/logbook-ui.js && node --check js/features/repos-ui.js && node --check js/features/settings-ui.js
       - run: npm run test:unit
       - run: npm run test:smoke
+      - run: sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq restic xorriso
+      - run: sudo bash tests/integration/portable-live.sh
