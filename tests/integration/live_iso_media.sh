@@ -9,7 +9,7 @@ printf 'test root\n' > "$work/root/example.txt"
 printf 'fake test kernel\n' > "$work/tree/live/vmlinuz"
 printf 'fake test initrd\n' > "$work/tree/live/initrd.img"
 printf 'set timeout=5\nmenuentry "Hangar test" { linux /live/vmlinuz boot=live }\n' > "$work/tree/boot/grub/grub.cfg"
-mksquashfs "$work/root" "$work/tree/live/filesystem.squashfs" -noappend -comp xz -no-progress >/dev/null
+mksquashfs "$work/root" "$work/tree/live/filesystem.squashfs" -noappend -comp xz -no-progress -processors 2 >/dev/null
 grub-mkrescue -o "$work/boot.iso" -V HANGAR_LIVE -iso-level 3 "$work/tree" >/dev/null 2>&1
 test -s "$work/boot.iso"
 xorriso -indev "$work/boot.iso" -report_el_torito plain > "$work/report" 2>&1
