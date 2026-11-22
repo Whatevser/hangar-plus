@@ -191,7 +191,7 @@ def build(repo, password, snapshot, output, kernel=None):
 
             print("Compressing the restored system (can require substantial disk space).", flush=True)
             run("mksquashfs", restored, iso_tree / "live/filesystem.squashfs",
-                "-noappend", "-comp", "xz", "-no-progress")
+                "-noappend", "-comp", "xz", "-no-progress", "-processors", "2")
             shutil.copy2("/boot/vmlinuz-" + kernel, iso_tree / "live/vmlinuz")
 
             # Generate a fresh live-boot initramfs for the exact host kernel.
