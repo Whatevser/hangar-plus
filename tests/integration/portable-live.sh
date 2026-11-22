@@ -8,6 +8,7 @@ trap 'rm -rf "$work"; rm -f /etc/hangar/repos/portable-ci.json /etc/hangar/repos
 mkdir -p /etc/hangar/repos /usr/libexec/hangar /var/cache/hangar/restic
 install -m 0755 "$ROOT/libexec/hangar-run" /usr/libexec/hangar/hangar-run
 install -m 0755 "$ROOT/libexec/hangar-portable" /usr/libexec/hangar/hangar-portable
+install -m 0755 "$ROOT/libexec/hangar-live-iso" /usr/libexec/hangar/hangar-live-iso
 printf '%s' 'portable-test-secret' > /etc/hangar/repos/portable-ci.key
 chmod 600 /etc/hangar/repos/portable-ci.key
 mkdir -p "$work/repo" "$work/input"
@@ -38,12 +39,15 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 exec restic -r "$here" --password-file "$here/hangar-access.key" "$@"
 LEGACY
 python3 /usr/libexec/hangar/hangar-portable access-kit portable-ci
-grep -q "Hangar standalone access kit v2" "$work/repo/hangar-access.sh"
+grep -q "Hangar standalone access kit v3" "$work/repo/hangar-access.sh"
+test -s "$work/repo/hangar-live-iso.py"
 cmp "$key" "$work/repo/hangar-access.key"
 
 # Even after removing Hangar's executable, the access-kit shell script works.
 mv /usr/libexec/hangar/hangar-portable "$work/portable-away"
 mv /usr/libexec/hangar/hangar-run "$work/runner-away"
+mv /usr/libexec/hangar/hangar-live-iso "$work/live-away"
+python3 "$work/repo/hangar-live-iso.py" --help >/dev/null
 "$work/repo/hangar-access.sh" iso latest "$work/standalone.iso"
 test -s "$work/standalone.iso"
 mkdir "$work/extracted"
