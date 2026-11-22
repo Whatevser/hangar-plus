@@ -7,8 +7,8 @@
     <!-- Critical startup paint: even a cold cache must not expose Alpine's raw
          markup or flash Bootstrap's light background in a dark Cockpit shell. -->
     <style>
-        html { background-color: var(--bs-body-bg, #fff); }
-        html[data-bs-theme="dark"] { background-color: var(--bs-body-bg, #212529); }
+        html { background-color: #f2f2f2; }
+        html[data-bs-theme="dark"] { background-color: #151515; }
         html.hangar-loading body { visibility: hidden; }
     </style>
     <script id="hangar-initial-theme">
@@ -21,7 +21,6 @@
     })();
     </script>
     <link rel="stylesheet" href="css/bootstrap.min.css">
-    <link rel="stylesheet" href="css/themes.css">
     <link rel="stylesheet" href="css/hangar.css">
     <script src="../base1/cockpit.js"></script>
 </head>
@@ -125,7 +124,6 @@
 <script src="js/core/provision.js"></script>
 <script src="js/core/logbook.js"></script>
 <script src="js/core/fspicker.js"></script>
-<script src="js/core/themes.js"></script>
 <script src="js/core/wordlist.js"></script>
 <script src="js/core/passgen.js"></script>
 <script src="js/core/config.js"></script>
