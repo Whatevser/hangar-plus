@@ -31,8 +31,6 @@
 
     const DEFAULT_GLOBAL = {
         version: 1,
-        // 'system' follows the OS/Cockpit preference; see js/core/themes.js.
-        theme: 'system',
         mountRoot: '/run/hangar/mnt',
         allowLocalAccess: false,
         mountIdleTimeoutSec: 900,

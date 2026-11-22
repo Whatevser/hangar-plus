@@ -419,56 +419,45 @@ async function main() {
             await ctx.close();
         }
 
-        // ---- themes
+        // ---- Cockpit appearance and page framing
         {
             const { ctx, page } = await open(browser);
 
-            await check('the saved theme is applied to <html> before anything renders', async () => {
+            await check('Hangar follows Cockpit light/dark without a theme picker', async () => {
                 const attr = await page.getAttribute('html', 'data-bs-theme');
                 assert(attr === 'light' || attr === 'dark',
-                    `system should resolve to light or dark, got ${attr}`);
-            });
-
-            await check('the Settings screen offers every registered theme', async () => {
+                    'Cockpit appearance must resolve to light or dark, got ' + attr);
                 await page.click('.nav-pills .nav-link:text-is("Settings")');
-                await page.waitForSelector('.hangar-theme-option', { timeout: 5000 });
-                const count = await page.locator('.hangar-theme-option').count();
-                const registry = await page.evaluate(() => window.HangarThemes.THEMES.length);
-                assertEqual(count, registry, 'picker does not show every theme');
+                assertEqual(await page.locator('.hangar-theme-option').count(), 0);
+                assertEqual(await page.locator('#hangar-appearance-title').count(), 0);
             });
 
-            await check('picking a theme repaints the whole page and persists it', async () => {
-                await page.click('.hangar-theme-option:has-text("Nord")');
-                await page.waitForTimeout(300);
-                assertEqual(await page.getAttribute('html', 'data-bs-theme'), 'nord');
-
-                // Written immediately — no Save step for a theme.
-                const written = await page.evaluate(() => window.__hangarStub.calls
-                    .filter((c) => c.kind === 'replace' && /config\.json$/.test(c.path))
-                    .map((c) => JSON.parse(c.content).theme));
-                assert(written.includes('nord'), `theme was not persisted: ${JSON.stringify(written)}`);
-            });
-
-            await check('a picked theme actually changes the rendered colours', async () => {
-                // The attribute alone proves nothing if themes.css lacks the palette.
-                const bg = await page.evaluate(() =>
-                    getComputedStyle(document.body).backgroundColor);
-                await page.click('.hangar-theme-option:has-text("Sepia")');
-                await page.waitForTimeout(300);
-                const after = await page.evaluate(() =>
-                    getComputedStyle(document.body).backgroundColor);
-                assert(bg !== after, `background did not change between themes (${bg})`);
-            });
-
-            await check('a theme pick does not mark the settings form dirty', async () => {
-                // It is written on click, so claiming unsaved changes would be a lie.
-                assertEqual(await page.isVisible('.badge:text-is("Unsaved changes")'), false);
+            await check('the main page is inset with rounded corners like Binup', async () => {
+                const info = await page.evaluate(() => {
+                    const html = getComputedStyle(document.documentElement);
+                    const body = getComputedStyle(document.body);
+                    const b = document.body.getBoundingClientRect();
+                    return {
+                        width: window.innerWidth,
+                        gutter: html.getPropertyValue('--hangar-page-gutter').trim(),
+                        radius: body.borderTopLeftRadius,
+                        left: b.left,
+                        right: window.innerWidth - b.right,
+                        surface: body.backgroundColor
+                    };
+                });
+                if (info.width > 767) {
+                    assertEqual(info.gutter, '1.5rem');
+                    assertEqual(info.radius, '16px');
+                    assert(Math.abs(info.left - 24) < 1, 'left gutter is not 24px');
+                    assert(Math.abs(info.right - 24) < 1, 'right gutter is not 24px');
+                } else {
+                    assert(Math.abs(info.left) < 1, 'mobile panel should be flush');
+                }
+                assert(info.surface !== 'rgba(0, 0, 0, 0)', 'page must have an opaque surface');
             });
 
             if (process.env.SHOT) {
-                await page.screenshot({ path: 'tests/e2e-theme.png', fullPage: true });
-                await page.click('.nav-pills .nav-link:text-is("Settings")').catch(() => {});
-                await page.waitForTimeout(600);
                 await page.screenshot({ path: 'tests/e2e-settings.png', fullPage: true });
             }
             await ctx.close();

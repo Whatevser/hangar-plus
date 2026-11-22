@@ -120,7 +120,7 @@ function stub() {
         // not: ismetozalp/hangar is where hangar itself ships from, so showing
         // anything else in Settings would document a setting nobody has.
         '/etc/hangar/config.json': JSON.stringify({
-            theme: 'nord', mountRoot: '/run/hangar/mnt',
+            mountRoot: '/run/hangar/mnt',
             updateRepo: 'ismetozalp/hangar', updateCheckOnStartup: true
         }),
         '/etc/hangar/installed-version': '1.0.0\n',
@@ -245,7 +245,7 @@ async function main() {
         await shot(page, 'logbook', 'scroll back through moments');
 
         await page.click('.nav-pills .nav-link:text-is("Settings")');
-        await shot(page, 'settings', 'themes and diagnostics');
+        await shot(page, 'settings', 'settings and diagnostics');
 
         // Dialogs worth showing, because they carry the decisions that matter.
         await page.evaluate(() => window.dispatchEvent(new CustomEvent('hangar:password',
