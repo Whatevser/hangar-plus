@@ -60,6 +60,7 @@ def source_archive(path, target):
         abort("Archive does not exist on the Cockpit host.")
     if path.suffix.lower() == ".zip":
         with zipfile.ZipFile(path) as archive:
+            links = []
             for info in archive.infolist():
                 name = info.filename
                 parts = PurePosixPath(name).parts
@@ -67,15 +68,29 @@ def source_archive(path, target):
                         not parts or any(p in ("", ".", "..") for p in parts)):
                     abort("Unsafe path in ZIP: " + name)
                 mode = (info.external_attr >> 16) & 0o170000
-                if mode not in (0, stat.S_IFDIR, stat.S_IFREG):
-                    abort("ZIP contains a link or special file: " + name)
+                if mode not in (0, stat.S_IFDIR, stat.S_IFREG, stat.S_IFLNK):
+                    abort("ZIP contains a special file: " + name)
                 dest = target.joinpath(*parts)
-                if info.is_dir():
+                if mode == stat.S_IFLNK:
+                    with archive.open(info) as inp:
+                        link = inp.read(8193)
+                    if len(link) > 8192:
+                        abort("Oversized symbolic link in ZIP: " + name)
+                    links.append((dest, link.decode("utf-8", errors="surrogateescape")))
+                elif info.is_dir():
                     dest.mkdir(parents=True, exist_ok=True)
                 else:
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     with archive.open(info) as inp, open(dest, "xb") as out:
                         shutil.copyfileobj(inp, out, length=1024 * 1024)
+            # Links are created last so no archive member can be extracted
+            # through one. Refuse links escaping the temporary extraction tree.
+            for dest, link in links:
+                if (os.path.isabs(link) or
+                        not (dest.parent / link).resolve().is_relative_to(target.resolve())):
+                    abort("Symbolic link escapes ZIP extraction: " + str(dest))
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.symlink_to(link)
     elif path.suffix.lower() == ".iso":
         if not shutil.which("xorriso"):
             abort("xorriso is required to import ISO files.")
