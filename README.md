@@ -81,6 +81,11 @@ Backblaze B2, Azure, Google Cloud Storage, or any
 **Turnkey.** Hangar installs what it needs. It never tells you to go and run a
 package manager.
 
+**Cockpit appearance.** Hangar uses Cockpit's light/dark preference (or the
+system preference when Cockpit is set to automatic) rather than maintaining its
+own themes. In Cockpit, the content area uses the same rounded, inset page
+surface as Binup; smaller windows use the full available width.
+
 ---
 
 ## What it looks like
