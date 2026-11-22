@@ -17,6 +17,6 @@ jobs:
       - name: Run smoke tests
         run: npm run test:smoke
       - name: Install browser test dependencies
-        run: npm ci && npx playwright install --with-deps chromium
+        run: npm install --no-audit --no-fund && npx playwright install --with-deps chromium
       - name: Run browser tests
         run: npm run test:e2e
