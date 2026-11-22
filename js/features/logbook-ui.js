@@ -1318,6 +1318,45 @@
                 }
             },
 
+            // --- portable snapshot archives and data ISO --------------------
+            async importSnapshot() {
+                if (!this.repoId || this.busy || typeof root.prompt !== 'function') return;
+                const name = root.prompt('Absolute path on this Cockpit host to an exported snapshot .zip or .iso:', '/mnt/backup/snapshot.zip');
+                if (!name) return;
+                this.beginBusy('Importing snapshot archive…');
+                this.clearStatus();
+                try {
+                    await cockpit.spawn(['/usr/libexec/hangar/hangar-portable', 'import',
+                        this.repoId, name.trim()], { superuser: 'require', err: 'message' });
+                    this.noticeKind = 'success';
+                    this.notice = 'Archive imported as a new encrypted snapshot. Use Restore without original parent folders for its contents.';
+                    await this.loadSnapshots();
+                } catch (e) {
+                    this.handleError(e);
+                } finally {
+                    this.endBusy();
+                }
+            },
+
+            async createIso() {
+                if (!this.moment || this.busy || typeof root.prompt !== 'function') return;
+                const defaultPath = '/var/tmp/hangar-' + this.moment.id.slice(0, 12) + '.iso';
+                const name = root.prompt('Save a DECRYPTED, non-bootable data ISO on this Cockpit host at:', defaultPath);
+                if (!name) return;
+                this.beginBusy('Creating data ISO…');
+                this.clearStatus();
+                try {
+                    await cockpit.spawn(['/usr/libexec/hangar/hangar-portable', 'iso',
+                        this.repoId, this.moment.id, name.trim()], { superuser: 'require', err: 'message' });
+                    this.noticeKind = 'success';
+                    this.notice = 'Decrypted data ISO created at ' + name.trim() + '. It is not a bootable system image.';
+                } catch (e) {
+                    this.handleError(e);
+                } finally {
+                    this.endBusy();
+                }
+            },
+
             // --- restore ------------------------------------------------------
 
             async restore() {
@@ -1741,6 +1780,12 @@
 '      <button type="button" class="btn btn-sm btn-outline-secondary"' +
 '              title="Select one file or folder. Folders download as ZIP archives."' +
 '              :disabled="!canDownload() || busy" @click="download()">Download</button>' +
+'      <button type="button" class="btn btn-sm btn-outline-secondary"' +
+'              title="Import a ZIP or ISO from a path on this host into this repository as a new snapshot."' +
+'              :disabled="!repoId || busy" @click="importSnapshot()">Import snapshot…</button>' +
+'      <button type="button" class="btn btn-sm btn-outline-secondary"' +
+'              title="Create an unencrypted data ISO from the selected complete snapshot (requires xorriso)."' +
+'              :disabled="!moment || busy" @click="createIso()">Create ISO…</button>' +
 
      // Deliberately last, outline rather than solid, and disabled while anything
      // else is in flight: it is the one control on this screen that destroys
