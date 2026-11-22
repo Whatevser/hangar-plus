@@ -21,5 +21,6 @@ jobs:
       - name: Standalone access kit and data ISO round trip
         run: |
           sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y restic xorriso
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq -y restic xorriso squashfs-tools grub-common grub-pc-bin grub-efi-amd64-bin mtools
+          bash tests/integration/live_iso_media.sh
           sudo bash tests/integration/portable-live.sh
