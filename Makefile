@@ -113,7 +113,7 @@ install:
 	@find $(INSTALL_DIR) -name __pycache__ -type d -prune -exec rm -rf {} +
 	@rm -rf $(INSTALL_DIR)/COVERAGE.html $(INSTALL_DIR)/coverage
 	install -d $(LIBEXEC)
-	@for f in hangar-run hangar-portable hangar-update; do if [ -f libexec/$f ]; then install -m 0755 libexec/$f $(LIBEXEC)/$f; fi; done
+	@for f in hangar-run hangar-portable hangar-update; do if [ -f libexec/$$f ]; then install -m 0755 libexec/$$f $(LIBEXEC)/$$f; fi; done
 	install -m 0644 systemd/hangar-auto-update.service /etc/systemd/system/hangar-auto-update.service
 	install -m 0644 systemd/hangar-auto-update.timer /etc/systemd/system/hangar-auto-update.timer
 	@systemctl daemon-reload
