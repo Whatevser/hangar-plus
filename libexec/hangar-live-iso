@@ -140,8 +140,12 @@ menuentry "Hangar snapshot - safe inspection shell (default)" {{
     linux /live/vmlinuz boot=live components union=overlay nopersistence noresume init=/bin/bash
     initrd /live/initrd.img
 }}
-menuentry "Hangar snapshot - full boot (EXPERIMENTAL; isolated machine only)" {{
+menuentry "Hangar snapshot - console system (EXPERIMENTAL; isolated VM only)" {{
     linux /live/vmlinuz boot=live components union=overlay nopersistence noresume systemd.unit=multi-user.target
+    initrd /live/initrd.img
+}}
+menuentry "Hangar snapshot - graphical desktop (EXPERIMENTAL; isolated VM only)" {{
+    linux /live/vmlinuz boot=live components union=overlay nopersistence noresume systemd.unit=graphical.target
     initrd /live/initrd.img
 }}
 # Snapshot: {snapshot}
@@ -216,7 +220,7 @@ def build(repo, password, snapshot, output, kernel=None):
             publish_iso(final, output)
 
         print("EXPERIMENTAL LIVE ISO: " + str(output), flush=True)
-        print("Default boot entry opens a shell; full boot must be tried ONLY in "
+        print("Default boot entry opens a shell; full system/desktop boot must be tried ONLY in "
               "an isolated VM with no host disks passed through.", flush=True)
         print("The ISO contains UNENCRYPTED credentials and personal files.", flush=True)
     finally:
