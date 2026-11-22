@@ -34,35 +34,35 @@ structure inside selected folders.
 
 **Import existing repository** (Repositories → Import existing…) attaches an
 existing local restic repository folder without copying its data or running
-\`restic init\`. Enter the directory that contains restic's \`config\` file and
+`restic init`. Enter the directory that contains restic's `config` file and
 the original password. Hangar must successfully list its snapshots **before**
 it saves a new repository definition. If verification fails, the temporary
 stored password is removed and the repository stays unregistered. This is
 the correct way to use an intact backup after reinstalling the system.
 
 **Create ISO** in the Logbook writes a **decrypted, non-bootable data ISO**
-for the selected snapshot. It requires \`xorriso\`, plus free space for the
+for the selected snapshot. It requires `xorriso`, plus free space for the
 temporary restored files and the finished ISO. It is not a clone of the
 encrypted restic repository, and it cannot preserve all Linux metadata.
 
 The original restic password is stored separately at
-\`/etc/hangar/repos/<id>.key\` and is NOT embedded in the encrypted
+`/etc/hangar/repos/<id>.key` and is NOT embedded in the encrypted
 repository. To use the backup independently of Hangar, local repositories
-offer an opt-in **Access kit** action that places \`hangar-access.key\` and
-\`hangar-access.sh\` beside the repository. This works retroactively; clicking
+offer an opt-in **Access kit** action that places `hangar-access.key` and
+`hangar-access.sh` beside the repository. This works retroactively; clicking
 Access kit again upgrades older generated scripts without overwriting the
 password. Unrecognized custom scripts or mismatched keys are never
 overwritten.
 
-The script needs only \`restic\` to browse or restore snapshots, or both
-\`restic\` and \`xorriso\` to create an ISO. After mounting your backup drive
+The script needs only `restic` to browse or restore snapshots, or both
+`restic` and `xorriso` to create an ISO. After mounting your backup drive
 on **any Linux host**, run in the repository directory:
 
-\`\`\`sh
+```sh
 sudo ./hangar-access.sh snapshots
 sudo ./hangar-access.sh iso latest /absolute/path/backup.iso
 # Or replace latest with a particular restic snapshot ID.
-\`\`\`
+```
 
 That ISO command works **without Hangar and without Cockpit**. It uses the
 local repository and password file directly, never alters existing
