@@ -20,7 +20,6 @@
             tab: 'overview',
             ready: false,
             missing: [],
-            settings: null,
             error: null,
 
             // Cockpit runs every page with limited access until the user turns
@@ -60,33 +59,27 @@
                 return !this.adminRequired;
             },
 
-            // --- theming ------------------------------------------------------
-            // Match Cockpit's own explicit appearance preference before falling
-            // back to OS color scheme. index.html uses the same rule on first paint.
+            // Cockpit is the only appearance authority. Its explicit light/dark
+            // preference wins; otherwise use the OS color scheme, as Binup does.
             _prefersDark() {
                 let dark = !!(root.matchMedia &&
                     root.matchMedia('(prefers-color-scheme: dark)').matches);
                 try {
-                    const shellTheme = root.localStorage && root.localStorage.getItem('shell:style');
-                    if (shellTheme === 'dark') dark = true;
-                    else if (shellTheme === 'light') dark = false;
-                } catch (_e) { /* unavailable storage: OS preference is sufficient */ }
+                    const preference = root.localStorage && root.localStorage.getItem('shell:style');
+                    if (preference === 'dark') dark = true;
+                    else if (preference === 'light') dark = false;
+                } catch (_e) { /* OS preference is still available */ }
                 return dark;
             },
 
-            // Applied while the startup gate is still hiding the interface.
-            applyTheme(id) {
-                const T = root.HangarThemes;
-                if (!T || !root.document || !root.document.documentElement) return;
-                const chosen = id !== undefined ? id
-                    : ((this.settings && this.settings.theme) || T.DEFAULT_THEME);
+            applyCockpitAppearance() {
+                if (!root.document || !root.document.documentElement) return;
                 root.document.documentElement.setAttribute(
-                    'data-bs-theme', T.resolve(chosen, this._prefersDark()).attr);
+                    'data-bs-theme', this._prefersDark() ? 'dark' : 'light');
             },
 
-            // Only reveal after Alpine has bound x-show/x-text and removed
-            // x-cloak. Do not wait for network, privilege or update checks.
-            _revealAfterTheme() {
+            // Reveal after Alpine has bound x-show/x-text, not after network I/O.
+            _revealAfterAppearance() {
                 const reveal = () => {
                     if (root.document && root.document.documentElement)
                         root.document.documentElement.classList.remove('hangar-loading');
@@ -99,47 +92,26 @@
                 else reveal();
             },
 
-            // 'system' has to keep tracking the OS after load, or a user who
-            // switches their desktop to dark at dusk is left on the light palette
-            // until they reload.
-            _watchSystemTheme() {
-                if (this._themeWatched || !root.matchMedia) return;
-                this._themeWatched = true;
-                const mq = root.matchMedia('(prefers-color-scheme: dark)');
-                const onChange = () => {
-                    const id = (this.settings && this.settings.theme) || 'system';
-                    if (id === 'system') this.applyTheme();
-                };
-                // addEventListener is not available on MediaQueryList everywhere;
-                // addListener is the deprecated-but-universal fallback.
-                if (typeof mq.addEventListener === 'function') mq.addEventListener('change', onChange);
-                else if (typeof mq.addListener === 'function') mq.addListener(onChange);
+            _watchCockpitAppearance() {
+                if (this._appearanceWatched) return;
+                this._appearanceWatched = true;
+                if (root.matchMedia) {
+                    const mq = root.matchMedia('(prefers-color-scheme: dark)');
+                    if (typeof mq.addEventListener === 'function')
+                        mq.addEventListener('change', () => this.applyCockpitAppearance());
+                    else if (typeof mq.addListener === 'function')
+                        mq.addListener(() => this.applyCockpitAppearance());
+                }
+                if (typeof root.addEventListener === 'function')
+                    root.addEventListener('storage', (ev) => {
+                        if (ev && ev.key === 'shell:style') this.applyCockpitAppearance();
+                    });
             },
 
             async init() {
-                try {
-                    this.settings = await root.HangarConfig.readGlobal();
-                } catch (e) {
-                    // A missing/unreadable global config is not fatal — defaults are
-                    // sufficient to render the UI and let the user fix things.
-                    this.settings = root.HangarConfig.mergeGlobal({});
-                }
-
-                this.applyTheme();
-                this._watchSystemTheme();
-                this._revealAfterTheme();
-                // A theme picked on the Settings screen must repaint the whole page,
-                // not just that tab, so the change comes back here as an event.
-                root.addEventListener('hangar:theme', (ev) => {
-                    const id = ev && ev.detail;
-                    if (this.settings) this.settings.theme = id;
-                    this.applyTheme(id);
-                });
-                root.addEventListener('storage', (ev) => {
-                    if (ev && ev.key === 'shell:style' &&
-                        (!this.settings || this.settings.theme === 'system'))
-                        this.applyTheme();
-                });
+                this.applyCockpitAppearance();
+                this._watchCockpitAppearance();
+                this._revealAfterAppearance();
 
                 await this.checkAdminAccess();
                 await this.refreshMissing();
