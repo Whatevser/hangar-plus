@@ -25,6 +25,8 @@ class LiveISOTests(unittest.TestCase):
         self.assertNotIn("systemd.unit", first)
         second = cfg.split("menuentry ")[2]
         self.assertIn("systemd.unit=multi-user.target", second)
+        third = cfg.split("menuentry ")[3]
+        self.assertIn("systemd.unit=graphical.target", third)
 
     def test_snapshot_must_contain_system_and_matching_modules(self):
         with tempfile.TemporaryDirectory() as d:
