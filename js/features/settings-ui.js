@@ -27,7 +27,7 @@
     // The settings a user may edit. `version` is in DEFAULT_GLOBAL too, but
     // it is a schema marker owned by core/config.js, not a preference.
     const EDITABLE = ['mountRoot', 'mountIdleTimeoutSec', 'notifyOnFailure',
-        'repoSizeMaxAgeHours'];
+        'repoSizeMaxAgeHours', 'allowLocalAccess'];
 
     // Bounds for the idle timeout, with reasons, because "absurd" has to mean
     // something specific to be testable:
@@ -172,7 +172,9 @@
             mountRoot: pathProblems(f.mountRoot),
             mountIdleTimeoutSec: timeoutProblems(f.mountIdleTimeoutSec),
             notifyOnFailure: notifyProblems(f.notifyOnFailure),
-            repoSizeMaxAgeHours: sizeAgeProblems(f.repoSizeMaxAgeHours)
+            repoSizeMaxAgeHours: sizeAgeProblems(f.repoSizeMaxAgeHours),
+            allowLocalAccess: f.allowLocalAccess === undefined || typeof f.allowLocalAccess === 'boolean'
+                ? [] : ['Allow local access must be true or false.']
         };
     }
 
@@ -194,7 +196,8 @@
             mountRoot: str(merged.mountRoot),
             mountIdleTimeoutSec: merged.mountIdleTimeoutSec,
             notifyOnFailure: !!merged.notifyOnFailure,
-            repoSizeMaxAgeHours: merged.repoSizeMaxAgeHours
+            repoSizeMaxAgeHours: merged.repoSizeMaxAgeHours,
+            allowLocalAccess: merged.allowLocalAccess === true
         };
     }
 
@@ -208,7 +211,8 @@
             mountRoot: trimmed(f.mountRoot),
             mountIdleTimeoutSec: n === null ? null : n,
             notifyOnFailure: !!f.notifyOnFailure,
-            repoSizeMaxAgeHours: h === null ? null : h
+            repoSizeMaxAgeHours: h === null ? null : h,
+            allowLocalAccess: f.allowLocalAccess === true
         };
     }
 
@@ -678,6 +682,8 @@
                     // The report quotes the settings, so it is stale the moment
                     // they change.
                     if (this.diag) this.diag.settings = this.saved;
+                    if (root.dispatchEvent && typeof root.CustomEvent === 'function')
+                        root.dispatchEvent(new root.CustomEvent('hangar:settings-saved', { detail: this.saved }));
                     return true;
                 } catch (e) {
                     // A non-fatal write outcome is not a red box. The edit stays in
@@ -899,6 +905,16 @@
         '      <template x-for="p in problemsFor(\'repoSizeMaxAgeHours\')" :key="p">',
         '        <div class="invalid-feedback d-block" x-text="p"></div>',
         '      </template>',
+        '    </div>',
+
+        '    <div class="form-check mb-3">',
+        '      <input class="form-check-input" id="hangar-allow-local-access" type="checkbox"',
+        '             x-model="form.allowLocalAccess" @change="touched()"',
+        '             aria-describedby="hangar-allow-local-access-help">',
+        '      <label class="form-check-label" for="hangar-allow-local-access">Allow local access</label>',
+        '      <div class="form-text" id="hangar-allow-local-access-help">',
+        '        New Logbook mounts let local Linux users browse all snapshots according to the saved Unix permissions.',
+        '      </div>',
         '    </div>',
 
         '    <div class="form-check mb-3">',

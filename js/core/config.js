@@ -34,6 +34,7 @@
         // 'system' follows the OS/Cockpit preference; see js/core/themes.js.
         theme: 'system',
         mountRoot: '/run/hangar/mnt',
+        allowLocalAccess: false,
         mountIdleTimeoutSec: 900,
         // How long a measured repository size is trusted before it is taken
         // again. `restic stats` reads the whole repository — 50 to 118 seconds

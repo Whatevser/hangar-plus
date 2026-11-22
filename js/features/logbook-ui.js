@@ -426,6 +426,10 @@
         }
 
         const destructive = m === 'original' || dest === '/';
+        const dropParent = m === 'alternate' && o.dropParent === true;
+        const sourceFolder = dropParent && include.length ? parentOf(include[0]) : '';
+        if (dropParent && (destructive || include.some((path) => path === '/' || parentOf(path) !== sourceFolder)))
+            problems.push('Choose items from one folder and a destination other than the filesystem root.');
         const snapshot = str(o.snapshot);
         if (snapshot === '') problems.push('No moment is selected.');
 
@@ -435,6 +439,7 @@
             snapshot: snapshot,
             target: dest,
             include: include,
+            sourceFolder: sourceFolder,
             verify: !!o.verify,
             destructive: destructive,
             warnings: warnings,
@@ -616,6 +621,37 @@
         });
     }
 
+    function downloadName(row) {
+        return (row.name || 'snapshot') + (row.isDir ? '.zip' : '');
+    }
+
+    function downloadUrl(transport, repoId, snapshot, row) {
+        if (!transport || !transport.csrf_token)
+            throw fail('Cockpit is not ready to start a download.');
+        const name = downloadName(row);
+        const utf8Name = encodeURIComponent(name).replace(/['()*]/g,
+            (c) => '%' + c.charCodeAt(0).toString(16));
+        const asciiName = name.replace(/[^\x20-\x7e]|["\\/]/g, '_');
+        const channel = {
+            host: transport.host,
+            payload: 'stream',
+            binary: 'raw',
+            superuser: 'require',
+            err: 'message',
+            spawn: ['/usr/libexec/hangar/hangar-run', '--download', repoId, snapshot,
+                row.isDir ? 'zip' : 'file', row.path],
+            external: {
+                'content-disposition': 'attachment; filename="' + asciiName +
+                    '"; filename*=UTF-8\'\'' + utf8Name,
+                'content-type': row.isDir ? 'application/zip' : 'application/octet-stream'
+            }
+        };
+        const query = JSON.stringify(channel).replace(/[^\x00-\x7f]/g,
+            (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+        const prefix = new URL(transport.uri('channel/' + transport.csrf_token)).pathname;
+        return prefix + '?' + root.btoa(query);
+    }
+
     // ---- the screen component ----------------------------------------------
 
     function hangarLogbookUi() {
@@ -657,7 +693,8 @@
             reader: 'none',            // 'mount' | 'ls' | 'none'
             fallbackReason: '',
             mountPoint: '',
-            localMountAccess: false,
+            allowLocalAccess: false,
+            _unmounting: null,
 
             // status
             //
@@ -689,8 +726,7 @@
             async init() {
                 try {
                     const settings = await Cfg.readGlobal();
-                    this.idleSec = Number(settings.mountIdleTimeoutSec) || this.idleSec;
-                this.mountRootSetting = settings.mountRoot || '';
+                    this.applyMountSettings(settings);
                 } catch (e) {
                     // Defaults are enough to browse; a broken global config is the
                     // Settings screen's problem, not the Logbook's.
@@ -698,6 +734,7 @@
                 if (root.addEventListener) {
                     // A FUSE mount outlives the page by design, so leaving without
                     // dropping it would strand it until the idle timer fires.
+                    root.addEventListener('hangar:settings-saved', (event) => this.applyMountSettings(event.detail));
                     root.addEventListener('pagehide', () => { this.releaseMount(); });
                 }
                 await this.loadRepos();
@@ -736,13 +773,19 @@
                     return false;           // a failed refresh must not break browsing
                 }
                 const ids = (list) => (list || []).map((s) => str(s && s.id)).sort().join(',');
-                if (ids(fresh) === ids(this.snapshots)) return false;
+                if (ids(fresh) === ids(this.snapshots)) {
+                    if (this.moment && this.reader === 'none') await this.loadTree();
+                    return false;
+                }
 
                 this.snapshots = fresh;
                 this.bands = timelineModel(this.snapshots, Date.now());
                 const stillThere = this.moment &&
                     fresh.some((s) => str(s.id) === str(this.moment.id));
-                if (stillThere) return true;            // leave the user where they are
+                if (stillThere) {
+                    if (this.reader === 'none') await this.loadTree();
+                    return true;
+                }
                 const first = this.bands.length ? this.bands[0].moments[0] : null;
                 if (first) await this.selectMoment(first);
                 else { this.moment = null; this.rows = []; this.entries = []; }
@@ -783,6 +826,16 @@
                 return true;
             },
 
+            applyMountSettings(settings) {
+                const mountRoot = settings.mountRoot || '';
+                const allowLocalAccess = settings.allowLocalAccess === true;
+                if (this.mountRootSetting !== mountRoot || this.allowLocalAccess !== allowLocalAccess)
+                    this.releaseMount();
+                this.idleSec = Number(settings.mountIdleTimeoutSec) || this.idleSec;
+                this.mountRootSetting = mountRoot;
+                this.allowLocalAccess = allowLocalAccess;
+            },
+
             mountRoot() { return this.mountRootSetting || ''; },
 
             idleMs() {
@@ -812,8 +865,9 @@
                 if (this.reader !== 'mount' || !this.repoId) return;
                 this.reader = 'none';
                 this.mountPoint = '';
-                this.localMountAccess = false;
-                return L.unmount(this.repoId).catch(() => null);
+                const pending = L.unmount(this.repoId).catch(() => null);
+                this._unmounting = pending;
+                return pending;
             },
 
             // --- status plumbing ----------------------------------------------
@@ -1065,7 +1119,7 @@
 
             // --- the file tree ------------------------------------------------
 
-            async ensureMount(allowOther = false) {
+            async ensureMount() {
                 if (this.reader === 'ls') return false;      // already fell back
                 if (!this.repo) return false;
 
@@ -1080,12 +1134,17 @@
                 }
 
                 try {
+                    await this._unmounting;
                     const state = await L.isMounted(this.repoId);
                     if (!state.mounted) {
+                        // StopUnit queues the stop. Wait for it to finish before
+                        // recreating the transient service with the same name.
+                        if (state.activeState === 'deactivating')
+                            await spawnText(['systemctl', 'stop', L.mountUnitService(this.repoId)]);
                         this.busyLabel = 'Mounting the repository…';
                         await L.mount({
                             repoId: this.repoId,
-                            allowOther,
+                            allowOther: this.allowLocalAccess,
                             repoUrl: this.repoUrl(),
                             passwordFile: Secrets.keyPath(this.repoId),
                             // buildMountArgv insists on a positive integer, and a
@@ -1116,7 +1175,6 @@
                         return false;
                     }
                     this.reader = 'mount';
-                    if (!state.mounted) this.localMountAccess = allowOther;
                     return true;
                 } catch (e) {
                     this.fallback((e && e.message) || 'the repository could not be mounted');
@@ -1131,33 +1189,6 @@
                 this.reader = 'ls';
                 this.fallbackReason = reason;
                 this.mountPoint = '';
-                this.localMountAccess = false;
-            },
-
-            async allowLocalMountAccess() {
-                const repoId = this.repoId;
-                const confirm = dialogs().confirmDialog;
-                if (typeof confirm !== 'function' || this.busy || !this.mountedFolder()) return;
-                this.beginBusy('Remounting for local access…');
-                try {
-                    const ok = await confirm({
-                        title: 'Allow local access to this repository?',
-                        message: 'Local Linux users can browse the mounted snapshots wherever their saved ownership and permission bits allow access.',
-                        detail: 'This applies to all snapshots in this repository for the lifetime of the mount.',
-                        confirmLabel: 'Allow local access'
-                    });
-                    if (!ok || repoId !== this.repoId || this.reader !== 'mount') return;
-                    await spawnText(['systemctl', 'stop', L.mountUnitService(repoId)]);
-                    this.reader = 'none';
-                    this.mountPoint = '';
-                    this.localMountAccess = false;
-                    if (this.repoId !== repoId) return;
-                    if (await this.ensureMount(true)) this.touchIdle();
-                } catch (e) {
-                    this.handleError(e);
-                } finally {
-                    this.endBusy();
-                }
             },
 
             mountedFolder() {
@@ -1264,6 +1295,29 @@
                 return selectionSummary(this.selected);
             },
 
+            canDownload() {
+                const row = this.selected[0];
+                return !!this.moment && this.selected.length === 1 &&
+                    (row.type === 'file' || row.isDir) && !row.isLink;
+            },
+
+            download() {
+                if (!this.canDownload() || this.busy) return;
+                this.clearStatus();
+                try {
+                    const row = this.selected[0];
+                    const link = root.document.createElement('a');
+                    link.href = downloadUrl(cockpit.transport, this.repoId, this.moment.id, row);
+                    // A native download streams straight to disk, even for large snapshots.
+                    link.download = downloadName(row);
+                    root.document.body.appendChild(link);
+                    link.click();
+                    link.remove();
+                } catch (e) {
+                    this.handleError(e);
+                }
+            },
+
             // --- restore ------------------------------------------------------
 
             async restore() {
@@ -1291,12 +1345,14 @@
                 this.clearStatus();
                 this.progress = null;
                 try {
+                    const fromFolder = plan.sourceFolder && plan.sourceFolder !== '/';
                     const result = await R.run('restore', this.resticOpts({
-                        snapshot: plan.snapshot,
+                        snapshot: fromFolder ? plan.snapshot + ':' + plan.sourceFolder : plan.snapshot,
                         target: plan.target,
                         // The picker supplies literal filenames. restic --include
                         // interprets backslashes and shell-style pattern characters.
-                        include: plan.include.map((path) => path.replace(/[\\*?\[\]]/g, '\\$&')),
+                        include: plan.include.map((path) => fromFolder ? path.slice(plan.sourceFolder.length) : path)
+                            .map((path) => path.replace(/[\\*?\[\]]/g, '\\$&')),
                         verify: true
                     }), (p) => { this.progress = p; });
 
@@ -1494,6 +1550,7 @@
             open: false,
             mode: DEFAULT_RESTORE_MODE,
             target: DEFAULT_RESTORE_TARGET,
+            dropParent: false,
             selection: [],
             snapshot: '',
             momentLabel: '',
@@ -1511,6 +1568,7 @@
                     this.summary = o.summary || selectionSummary(this.selection);
                     this.mode = DEFAULT_RESTORE_MODE;
                     this.target = o.defaultTarget || DEFAULT_RESTORE_TARGET;
+                    this.dropParent = false;
                     this.dialogError = '';
                     this._resolve = o.resolve || null;
                     this.open = true;
@@ -1542,7 +1600,9 @@
 
             plan() {
                 try {
-                    return restorePlan(this.selection, this.mode, this.target, { snapshot: this.snapshot });
+                    return restorePlan(this.selection, this.mode, this.target, {
+                        snapshot: this.snapshot, dropParent: this.dropParent
+                    });
                 } catch (e) {
                     return {
                         valid: false, destructive: false,
@@ -1678,6 +1738,9 @@
 
 '      <button type="button" class="btn btn-sm btn-primary"' +
 '              :disabled="!selected.length || busy" @click="restore()">Restore…</button>' +
+'      <button type="button" class="btn btn-sm btn-outline-secondary"' +
+'              title="Select one file or folder. Folders download as ZIP archives."' +
+'              :disabled="!canDownload() || busy" @click="download()">Download</button>' +
 
      // Deliberately last, outline rather than solid, and disabled while anything
      // else is in flight: it is the one control on this screen that destroys
@@ -1702,8 +1765,6 @@
 '               readonly :value="mountedFolder()" x-ref="mountedFolder">' +
 '        <button type="button" class="btn btn-outline-secondary"' +
 '                @click="copyMountedFolder($refs.mountedFolder)">Copy path</button>' +
-'        <button type="button" class="btn btn-outline-secondary" x-show="!localMountAccess"' +
-'                @click="allowLocalMountAccess()">Allow local access</button>' +
 '      </div>' +
 '    </div>' +
 
@@ -1847,7 +1908,7 @@
 
     const API = {
         // pure
-        treeRowsFor, selectionSummary, restorePlan,
+        treeRowsFor, selectionSummary, restorePlan, downloadUrl,
         timelineModel, momentFor, lsEntriesFor, parseFindOutput, listDirArgv,
         breadcrumbsFor, parentOf, joinPath, normalizePath,
         formatBytes, absoluteLabel, clockLabel, badgeClassFor, remediationLabel,

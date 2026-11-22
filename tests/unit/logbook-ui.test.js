@@ -1970,26 +1970,57 @@ test('the mounted folder uses the selected snapshot ID and current directory', a
     assert.equal(c.mountedFolder(), '');
 });
 
-test('letting local users browse restarts the mount only after confirmation', async () => {
+test('new mounts follow the saved global access setting', async () => {
     const c = attached();
-    c.reader = 'mount';
-    c.mountPoint = '/run/hangar/mnt/nas';
-    c.moment = { shortId: 'a1b2c3d4' };
-    const commands = [];
     const mountOptions = [];
     await withPatched(Core, {
         isMounted: async () => ({ mounted: false }),
         mount: async (opts) => { mountOptions.push(opts); },
         waitForMount: async () => true
-    }, () => withCockpit(async (argv) => { commands.push(argv); }, async () => {
-        await withDialogs({ confirmDialog: async () => false }, () => c.allowLocalMountAccess());
-        assert.deepEqual(commands, []);
-        await withDialogs({ confirmDialog: async () => true }, () => c.allowLocalMountAccess());
-        assert.deepEqual(commands, [['systemctl', 'stop', Core.mountUnitService(c.repoId)]]);
-        assert.equal(mountOptions[0].allowOther, true);
-        assert.equal(c.localMountAccess, true);
-        c.clearIdle();
-    }));
+    }, async () => {
+        for (const allowLocalAccess of [undefined, true, false, 'true']) {
+            c.applyMountSettings({ allowLocalAccess });
+            assert.equal(await c.ensureMount(), true);
+        }
+        assert.deepEqual(mountOptions.map((opts) => opts.allowOther), [false, true, false, false]);
+    });
+});
+
+test('browser download uses a binary attachment channel with Unicode names and no repository credentials', () => {
+    const id = 'a'.repeat(64);
+    const transport = {
+        host: 'nas',
+        csrf_token: 'csrf',
+        uri: (endpoint) => 'wss://localhost/cockpit-prefix/cockpit/' + endpoint
+    };
+    const row = { name: 'Дані', path: '/home/roman/Дані', isDir: true };
+    const [pathname, query] = UI.downloadUrl(transport, 'nas', id, row).split('?');
+    assert.equal(pathname, '/cockpit-prefix/cockpit/channel/csrf');
+    const channel = JSON.parse(atob(query));
+    assert.deepEqual(channel.spawn, ['/usr/libexec/hangar/hangar-run', '--download',
+        'nas', id, 'zip', row.path]);
+    assert.equal(channel.payload, 'stream');
+    assert.equal(channel.binary, 'raw');
+    assert.match(channel.external['content-disposition'], /filename\*=UTF-8''%D0/);
+    assert.equal(channel.external['content-type'], 'application/zip');
+});
+
+test('restore without parents rebases on the folder and preserves literal basenames', async () => {
+    const selection = [{ path: '/home/roman/Downloads/file[1]' }, { path: '/home/roman/Downloads/folder' }];
+    const plan = UI.restorePlan(selection, 'alternate', '/tmp/dest', { snapshot: 'abc', dropParent: true });
+    assert.equal(plan.valid, true);
+    assert.equal(plan.sourceFolder, '/home/roman/Downloads');
+    assert.equal(UI.restorePlan(selection, 'alternate', '/', { snapshot: 'abc', dropParent: true }).valid, false);
+    assert.equal(UI.restorePlan(selection.concat('/etc/hosts'), 'alternate', '/tmp/dest',
+        { snapshot: 'abc', dropParent: true }).valid, false);
+    assert.equal(UI.restorePlan(selection, 'original', '', { snapshot: 'abc', dropParent: true }).sourceFolder, '');
+    const c = attached();
+    await withPatched(Restic, { run: async (_, opts) => {
+        assert.equal(opts.snapshot, 'abc:/home/roman/Downloads');
+        assert.deepEqual(opts.include, ['/file\\[1\\]', '/folder']);
+        return { status: 'ok', summary: { total_files: 2 } };
+    } }, () => c.runRestore(plan));
+    assert.equal(c.noticeKind, 'success');
 });
 
 test('restore verifies contents and treats a picked filename as literal', async () => {

@@ -23,9 +23,13 @@ restoring a file is copying it. Change badges show what was added, modified or
 removed between adjacent snapshots.
 
 When a snapshot is mounted, **Copy path** copies the current folder's absolute
-path on the Cockpit host. Choose **Allow local access** to remount that repository
-for local accounts. It stays read-only and enforces the saved Unix permissions.
-Access ends when the Logbook unmounts the repository.
+path on the Cockpit host. Enable **Allow local access** in **Settings** to let
+local accounts browse new read-only mounts under the saved Unix permissions.
+
+Select one file or folder and click **Download** to save the file or a folder
+ZIP in your browser. In the restore dialog, **Restore without original parent
+folders** puts selected items directly in the destination and preserves the
+structure inside selected folders.
 
 **Anywhere for a destination.** Local disk, USB, SFTP, a REST server, Amazon S3,
 Backblaze B2, Azure, Google Cloud Storage, or any

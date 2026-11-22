@@ -313,7 +313,8 @@ test('formFromSettings fills defaults and drops unknown keys', () => {
         mountRoot: '/x',
         mountIdleTimeoutSec: DEFAULTS.mountIdleTimeoutSec,
         notifyOnFailure: DEFAULTS.notifyOnFailure,
-        repoSizeMaxAgeHours: DEFAULTS.repoSizeMaxAgeHours
+        repoSizeMaxAgeHours: DEFAULTS.repoSizeMaxAgeHours,
+        allowLocalAccess: false
     });
     assert.equal(form.nonsense, undefined);
 });
@@ -323,7 +324,8 @@ test('formFromSettings on null is the shipped defaults', () => {
         mountRoot: DEFAULTS.mountRoot,
         mountIdleTimeoutSec: DEFAULTS.mountIdleTimeoutSec,
         notifyOnFailure: DEFAULTS.notifyOnFailure,
-        repoSizeMaxAgeHours: DEFAULTS.repoSizeMaxAgeHours
+        repoSizeMaxAgeHours: DEFAULTS.repoSizeMaxAgeHours,
+        allowLocalAccess: false
     });
 });
 
@@ -332,9 +334,10 @@ test('settingsFromForm trims and coerces exactly once', () => {
         mountRoot: '  /srv/mnt  ',
         mountIdleTimeoutSec: '1200',
         notifyOnFailure: 1,
-        repoSizeMaxAgeHours: '12'
+        repoSizeMaxAgeHours: '12',
+        allowLocalAccess: true
     }), { mountRoot: '/srv/mnt', mountIdleTimeoutSec: 1200, notifyOnFailure: true,
-          repoSizeMaxAgeHours: 12 });
+          repoSizeMaxAgeHours: 12, allowLocalAccess: true });
 });
 
 test('settingsFromForm keeps an unparseable timeout as null rather than zero', () => {
@@ -344,7 +347,7 @@ test('settingsFromForm keeps an unparseable timeout as null rather than zero', (
 
 test('a form round-trips through settings unchanged', () => {
     const settings = { mountRoot: '/srv/mnt', mountIdleTimeoutSec: 120, notifyOnFailure: false,
-        repoSizeMaxAgeHours: 6 };
+        repoSizeMaxAgeHours: 6, allowLocalAccess: true };
     const back = UI.settingsFromForm(UI.formFromSettings(settings));
     assert.deepEqual(back, settings);
     assert.equal(UI.isDirty(UI.formFromSettings(settings), settings), false);
@@ -700,10 +703,11 @@ test('save() writes the coerced settings and clears the dirty state', async () =
     c.form.mountRoot = '  /srv/mnt  ';
     c.form.mountIdleTimeoutSec = '1800';
     c.form.notifyOnFailure = false;
+    c.form.allowLocalAccess = true;
     assert.equal(await c.save(), true);
     assert.deepEqual(deps.written, [
         { mountRoot: '/srv/mnt', mountIdleTimeoutSec: 1800, notifyOnFailure: false,
-          repoSizeMaxAgeHours: DEFAULTS.repoSizeMaxAgeHours }
+          repoSizeMaxAgeHours: DEFAULTS.repoSizeMaxAgeHours, allowLocalAccess: true }
     ]);
     assert.equal(c.dirty(), false);
     assert.equal(c.savedAt, '2026-08-01T09:00:00.000Z');

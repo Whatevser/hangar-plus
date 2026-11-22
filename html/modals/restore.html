@@ -70,7 +70,15 @@
                                     @click="browseTarget()" aria-label="Browse for the restore destination">Browse…</button>
                         </div>
                         <div class="form-text">
-                            An absolute path. Restic recreates the snapshot’s directory structure below it, preserves saved ownership and permissions, and verifies the restored files.
+                            An absolute path. Restic preserves saved ownership and permissions and verifies the restored files.
+                        </div>
+                        <div class="form-check mt-2">
+                            <input id="hangar-restore-drop-parent" class="form-check-input"
+                                   type="checkbox" x-model="dropParent">
+                            <label class="form-check-label" for="hangar-restore-drop-parent">
+                                Restore without original parent folders
+                            </label>
+                            <div class="form-text">Place the selected files and folders directly in the destination.</div>
                         </div>
                     </div>
 

@@ -1884,7 +1884,33 @@ def write_state(job_id, record):
         log("warning", "could not write state file", error=str(e))
 
 
+def download_snapshot(args):
+    if len(args) != 4:
+        die(1, "usage: hangar-run --download <repo-id> <snapshot-id> <file|zip> <snapshot-path>")
+    repo_id, snapshot, mode, path = args
+    if not ID_RE.fullmatch(repo_id) or not re.fullmatch(r"[a-fA-F0-9]{64}", snapshot):
+        die(1, "invalid repository or snapshot id")
+    if mode not in ("file", "zip") or not path.startswith("/") or any(
+            part in (".", "..") for part in path.split("/")):
+        die(1, "invalid snapshot download selection")
+
+    repo = read_json(os.path.join(CONF_DIR, "repos", repo_id + ".json"))
+    if not isinstance(repo, dict):
+        die(1, "repository file is not an object", repo=repo_id)
+    argv = ["restic", "-r", repo_url(repo), "--password-file", password_file(repo_id),
+            "--cache-dir", RESTIC_CACHE_DIR, "dump"]
+    if mode == "zip":
+        # Relocate the selected folder to the archive root.
+        argv += ["--archive", "zip", snapshot + ":" + path, "/"]
+    else:
+        argv += [snapshot, path]
+    # Keep repository credentials out of the HTTP request and stdout byte stream.
+    os.execvpe("restic", argv, dict(os.environ, **backend_env(repo)))
+
+
 def main(argv):
+    if argv[1:2] == ["--download"]:
+        return download_snapshot(argv[2:])
     if len(argv) < 2:
         die(1, "usage: hangar-run <job-id> [--print-plan]")
     job_id = argv[1]
