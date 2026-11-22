@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""Experimental, non-destructive live ISO from a complete Linux restic snapshot.
+
+Host-side build only. The installed bootloader, EFI variables, partitions and
+restic snapshots are never modified. Generated media is UNENCRYPTED.
+
+Backend: Debian/Ubuntu/Mint initramfs-tools + live-boot + GRUB, x86_64.
+This is intentionally NOT a generic system imaging or recovery tool.
+"""
+import argparse
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+SNAPSHOT = re.compile(r"(?:[0-9a-fA-F]{64}|latest)\Z")
+KERNEL = re.compile(r"[A-Za-z0-9._+-]+\Z")
+REQUIRED = ("restic", "mkinitramfs", "lsinitramfs", "mksquashfs",
+            "grub-mkrescue", "xorriso")
+
+
+def fail(message):
+    raise ValueError(message)
+
+
+def run(*args, **kwargs):
+    print("+ " + " ".join(str(p) for p in args[:3]) + (" …" if len(args) > 3 else ""),
+          flush=True)
+    return subprocess.run([str(p) for p in args], check=True, **kwargs)
+
+
+def read_os_release(path):
+    """Read /usr/lib/os-release directly: no absolute symlinks into host /etc."""
+    if not path.is_file() or path.is_symlink():
+        fail("The snapshot must include a regular /usr/lib/os-release file.")
+    out = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if "=" not in raw or raw.lstrip().startswith("#"):
+            continue
+        k, v = raw.split("=", 1)
+        if k in ("ID", "VERSION_ID"):
+            out[k] = v.strip().strip('"').strip("'")
+    return out
+
+
+def check_host(kernel, output):
+    if os.geteuid() != 0:
+        fail("Live ISO construction needs root to restore file ownership.")
+    if sys.platform != "linux" or platform.machine() not in ("x86_64", "amd64"):
+        fail("Experimental live ISO currently supports only x86_64 Linux.")
+    if not KERNEL.fullmatch(kernel):
+        fail("Invalid kernel version.")
+    if not output.is_absolute() or output.suffix.lower() != ".iso":
+        fail("Use an absolute .iso output filename.")
+    if not output.parent.is_dir():
+        fail("Output parent directory is missing.")
+    if output.exists() or output.is_symlink():
+        fail("Refusing to overwrite an ISO.")
+    for exe in REQUIRED:
+        if not shutil.which(exe):
+            fail("Missing " + exe + ". Install restic, initramfs-tools, "
+                 "squashfs-tools, xorriso and grub-common.")
+    if not Path("/usr/share/initramfs-tools/scripts/live").is_file():
+        fail("live-boot initramfs support is missing. Install live-boot "
+             "and live-boot-initramfs-tools before building.")
+    if not Path("/usr/lib/grub/x86_64-efi").is_dir():
+        fail("GRUB x86_64 EFI modules missing. Install grub-efi-amd64-bin and mtools.")
+    if not Path("/usr/lib/grub/i386-pc").is_dir():
+        fail("GRUB BIOS modules missing. Install grub-pc-bin.")
+    if not Path("/boot/vmlinuz-" + kernel).is_file():
+        fail("Current boot kernel /boot/vmlinuz-" + kernel + " is missing.")
+    if not Path("/lib/modules/" + kernel).is_dir():
+        fail("Current kernel modules /lib/modules/" + kernel + " are missing.")
+    return True
+
+
+def check_snapshot_root(root, kernel):
+    """Reject home-only backups and mismatched OS/modules before touching files."""
+    if (root / "etc").is_symlink() or not (root / "etc").is_dir():
+        fail("Snapshot must contain a real /etc directory from a full system.")
+    if not (root / "usr/lib/systemd/systemd").is_file():
+        fail("Snapshot lacks systemd. Use a complete Linux system snapshot, not /home.")
+    snapshot_release = read_os_release(root / "usr/lib/os-release")
+    host_release = read_os_release(Path("/usr/lib/os-release"))
+    if not snapshot_release.get("ID") or any(
+            snapshot_release.get(k) != host_release.get(k) for k in ("ID", "VERSION_ID")):
+        fail("Snapshot OS release differs from the current machine. "
+             "This experiment only boots snapshots of the same OS version.")
+    if not (root / "usr/lib/modules" / kernel).is_dir() and not (
+            root / "lib/modules" / kernel).is_dir():
+        fail("Snapshot lacks kernel modules for current kernel " + kernel +
+             ". A matching kernel/modules pair is required.")
+    # Avoid writing to a host file via a symlink extracted from the repository.
+    for name in ("fstab", "crypttab"):
+        if (root / "etc" / name).is_symlink():
+            fail("Refusing to replace symlinked /etc/" + name + " in restored snapshot.")
+    return True
+
+
+def prepare_live_root(root):
+    """Edit only the temporary restored copy; never the original snapshot or host."""
+    (root / "etc/fstab").write_text(
+        "# Experimental Hangar live media: original disk mounts disabled.\n",
+        encoding="utf-8")
+    (root / "etc/crypttab").write_text(
+        "# Experimental Hangar live media: original disk unlocks disabled.\n",
+        encoding="utf-8")
+    # Disable Hangar's recurring tasks inside the live copy, not on the host.
+    systemd = root / "etc/systemd/system"
+    if systemd.is_dir() and not systemd.is_symlink():
+        for path in systemd.glob("hangar-*.timer"):
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+                path.symlink_to("/dev/null")
+
+
+def grub_config(snapshot):
+    return f"""set default=0
+set timeout=12
+set timeout_style=menu
+menuentry "Hangar snapshot - safe inspection shell (default)" {{
+    linux /live/vmlinuz boot=live components union=overlay nopersistence noresume init=/bin/bash
+    initrd /live/initrd.img
+}}
+menuentry "Hangar snapshot - full boot (EXPERIMENTAL; isolated machine only)" {{
+    linux /live/vmlinuz boot=live components union=overlay nopersistence noresume systemd.unit=multi-user.target
+    initrd /live/initrd.img
+}}
+# Snapshot: {snapshot}
+"""
+
+
+def publish_iso(stage, output):
+    """Never replace an existing ISO. Hardlink if possible, copy O_EXCL if not."""
+    try:
+        os.link(stage, output)
+    except OSError as exc:
+        if exc.errno not in (1, 18, 95, 38):  # EPERM, EXDEV, EOPNOTSUPP, ENOSYS
+            raise
+        fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as dst, stage.open("rb") as src:
+                shutil.copyfileobj(src, dst, length=1024 * 1024)
+        except BaseException:
+            output.unlink(missing_ok=True)
+            raise
+    output.chmod(0o600)
+
+
+def build(repo, password, snapshot, output, kernel=None):
+    if not SNAPSHOT.fullmatch(snapshot):
+        fail("Use 'latest' or a full 64-character restic snapshot ID.")
+    if not password.is_file():
+        fail("Restic password file is missing.")
+    kernel = kernel or platform.uname().release
+    check_host(kernel, output)
+    original_umask = os.umask(0o077)
+    try:
+        with tempfile.TemporaryDirectory(prefix=".hangar-live-", dir=output.parent) as tmp:
+            tmp = Path(tmp)
+            restored = tmp / "root"
+            restored.mkdir()
+            iso_tree = tmp / "iso"
+            (iso_tree / "live").mkdir(parents=True)
+            (iso_tree / "boot/grub").mkdir(parents=True)
+            final = tmp / "build.iso"
+
+            print("Restoring snapshot into private staging; repository is unchanged.", flush=True)
+            run("restic", "-r", repo, "--password-file", password, "restore",
+                snapshot, "--target", restored, stdout=subprocess.DEVNULL)
+            check_snapshot_root(restored, kernel)
+            prepare_live_root(restored)
+
+            print("Compressing the restored system (can require substantial disk space).", flush=True)
+            run("mksquashfs", restored, iso_tree / "live/filesystem.squashfs",
+                "-noappend", "-comp", "xz", "-no-progress")
+            shutil.copy2("/boot/vmlinuz-" + kernel, iso_tree / "live/vmlinuz")
+
+            # Generate a fresh live-boot initramfs for the exact host kernel.
+            # Never run update-initramfs or grub-install, which modify the host.
+            run("mkinitramfs", "-o", iso_tree / "live/initrd.img", kernel)
+            entries = subprocess.check_output(["lsinitramfs",
+                        str(iso_tree / "live/initrd.img")], text=True).splitlines()
+            if not any(x.lstrip("./") == "scripts/live" for x in entries):
+                fail("Generated initramfs does not include live-boot scripts.")
+
+            (iso_tree / "boot/grub/grub.cfg").write_text(
+                grub_config(snapshot), encoding="utf-8")
+            print("Building GRUB BIOS+UEFI live ISO. Secure Boot is unsupported.", flush=True)
+            run("grub-mkrescue", "-o", final, "-V", "HANGAR_LIVE",
+                "-iso-level", "3", iso_tree, stdout=subprocess.DEVNULL)
+            if not final.is_file() or not final.stat().st_size:
+                fail("GRUB did not produce an ISO.")
+            publish_iso(final, output)
+
+        print("EXPERIMENTAL LIVE ISO: " + str(output), flush=True)
+        print("Default boot entry opens a shell; full boot must be tried ONLY in "
+              "an isolated VM with no host disks passed through.", flush=True)
+        print("The ISO contains UNENCRYPTED credentials and personal files.", flush=True)
+    finally:
+        os.umask(original_umask)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repo", required=True)
+    parser.add_argument("--password-file", type=Path, required=True)
+    parser.add_argument("--snapshot", required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--kernel", help="Expert/testing override; requires matching modules")
+    args = parser.parse_args()
+    build(args.repo, args.password_file, args.snapshot, args.output, args.kernel)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+        print("Hangar live ISO: " + str(exc), file=sys.stderr)
+        sys.exit(1)
