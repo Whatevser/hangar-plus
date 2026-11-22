@@ -1,13 +1,24 @@
-/* hangar.css — plugin styling layered over Bootstrap + the shared themes.css.
- *
- * The Logbook scrubber is the only genuinely custom widget here; everything else
- * leans on Bootstrap so the plugin inherits Cockpit's light/dark switching via
- * themes.css rather than maintaining a second palette.
+/* Hangar: Cockpit light/dark colours and Binup's inset rounded page surface.
+ * All existing Bootstrap screens follow these shared semantic variables.
  */
-
 :root {
     --hangar-gutter: 1rem;
     --hangar-scrubber-w: 13rem;
+    --hangar-page-gutter: 1.5rem;
+    --hangar-page-radius: 1rem;
+    --hangar-canvas: #f2f2f2;
+    --hangar-surface: #fff;
+    --bs-body-bg: #fff;
+    --bs-body-bg-rgb: 255, 255, 255;
+    --bs-body-color: #151515;
+    --bs-body-color-rgb: 21, 21, 21;
+    --bs-secondary-bg: #f2f2f2;
+    --bs-tertiary-bg: #f5f5f5;
+    --bs-border-color: #d2d2d2;
+    --bs-primary: #0066cc;
+    --bs-primary-rgb: 0, 102, 204;
+    --bs-link-color: #0066cc;
+    --bs-link-hover-color: #004b95;
 
     /* Derived from Bootstrap's semantic colours rather than hardcoded, so every
      * palette in themes.css restyles the status dots, badges and scrubber for free.
@@ -19,26 +30,100 @@
     --hangar-idle: var(--bs-secondary-color, #6c757d);
 }
 
+:root[data-bs-theme="dark"] {
+    --hangar-canvas: #151515;
+    --hangar-surface: #292929;
+    --bs-body-bg: #292929;
+    --bs-body-bg-rgb: 41, 41, 41;
+    --bs-body-color: #f0f0f0;
+    --bs-body-color-rgb: 240, 240, 240;
+    --bs-heading-color: #f0f0f0;
+    --bs-secondary-color: #c7c7c7;
+    --bs-secondary-bg: #383838;
+    --bs-tertiary-bg: #333333;
+    --bs-border-color: #595959;
+    --bs-primary: #92c5f9;
+    --bs-primary-rgb: 146, 197, 249;
+    --bs-link-color: #92c5f9;
+    --bs-link-hover-color: #b4d7fc;
+}
+
+html {
+    height: 100%;
+    overflow: hidden;
+    background: var(--hangar-canvas);
+}
+
 /* x-cloak must be defined in CSS; the attribute alone does not hide anything.
    The document-level gate in index.html remains until async theme loading ends. */
 [x-cloak] { display: none !important; }
 
 body {
-    margin: 0;
-    font-size: 0.9rem;
+    height: calc(100% - var(--hangar-page-gutter));
+    margin: 0 var(--hangar-page-gutter);
+    overflow: hidden;
+    border-radius: var(--hangar-page-radius);
+    background: var(--hangar-surface);
+    font: 0.9rem/1.5 "Red Hat Text", Helvetica, Arial, sans-serif;
+}
+
+.btn-primary {
+    --bs-btn-bg: var(--bs-primary);
+    --bs-btn-border-color: var(--bs-primary);
+    --bs-btn-hover-bg: color-mix(in srgb, var(--bs-primary) 85%, #000);
+    --bs-btn-hover-border-color: color-mix(in srgb, var(--bs-primary) 80%, #000);
+    --bs-btn-active-bg: color-mix(in srgb, var(--bs-primary) 75%, #000);
+    --bs-btn-active-border-color: color-mix(in srgb, var(--bs-primary) 75%, #000);
+    --bs-btn-disabled-bg: var(--bs-primary);
+    --bs-btn-disabled-border-color: var(--bs-primary);
+}
+:root[data-bs-theme="dark"] .btn-primary {
+    --bs-btn-color: #151515;
+    --bs-btn-hover-color: #151515;
+    --bs-btn-active-color: #151515;
+    --bs-btn-disabled-color: #151515;
+}
+.btn-outline-primary {
+    --bs-btn-color: var(--bs-primary);
+    --bs-btn-border-color: var(--bs-primary);
+    --bs-btn-hover-bg: var(--bs-primary);
+    --bs-btn-hover-border-color: var(--bs-primary);
+    --bs-btn-active-bg: var(--bs-primary);
+    --bs-btn-active-border-color: var(--bs-primary);
+}
+:root[data-bs-theme="dark"] .btn-outline-primary {
+    --bs-btn-hover-color: #151515;
+    --bs-btn-active-color: #151515;
 }
 
 .hangar-shell {
     display: flex;
     flex-direction: column;
-    height: 100vh;
+    height: 100%;
+    min-height: 0;
     overflow: hidden;
 }
 
 .hangar-header {
     flex: 0 0 auto;
-    padding: 0.6rem var(--hangar-gutter);
+    padding: 0.6rem 1.5rem;
     border-bottom: 1px solid var(--bs-border-color, rgba(0, 0, 0, 0.15));
+}
+
+/* Subtle tab underline, like Binup's Cockpit navigation. */
+.hangar-header .nav-pills { gap: 0.75rem; }
+.hangar-header .nav-pills .nav-link {
+    border-bottom: 3px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: var(--bs-secondary-color);
+}
+.hangar-header .nav-pills .nav-link:hover { color: var(--bs-body-color); }
+.hangar-header .nav-pills .nav-link.active {
+    border-bottom-color: var(--bs-primary);
+    background: transparent;
+    color: var(--bs-body-color);
+    font-weight: 600;
 }
 
 .hangar-body {
@@ -254,42 +339,6 @@ body {
     scrollbar-color: var(--bs-secondary-color, #6c757d) transparent;
 }
 
-/* --- theme picker ------------------------------------------------------ */
-
-.hangar-swatch {
-    display: inline-block;
-    width: 1.6rem;
-    height: 1.6rem;
-    border-radius: 0.3rem;
-    border: 1px solid var(--bs-border-color, rgba(0, 0, 0, 0.2));
-    vertical-align: middle;
-}
-
-.hangar-theme-option {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    border: 1px solid transparent;
-    border-radius: 0.35rem;
-    padding: 0.35rem 0.6rem;
-    background: transparent;
-    cursor: pointer;
-    color: inherit;
-}
-
-.hangar-theme-option:hover { background: var(--bs-secondary-bg, rgba(0, 0, 0, 0.06)); }
-
-.hangar-theme-option[aria-pressed="true"] {
-    border-color: var(--bs-primary, #0d6efd);
-    background: var(--bs-primary-bg-subtle, rgba(13, 110, 253, 0.1));
-}
-
-/* Keyboard focus must stay obvious on every palette, including the dark ones. */
-.hangar-theme-option:focus-visible {
-    outline: 2px solid var(--bs-primary, #0d6efd);
-    outline-offset: 2px;
-}
-
 /* --- misc -------------------------------------------------------------- */
 
 .hangar-empty {
@@ -330,4 +379,11 @@ body {
 .alert .h1, .alert .h2, .alert .h3, .alert .h4, .alert .h5, .alert .h6,
 .alert legend {
     color: inherit;
+}
+
+/* Binup's desktop gutter, removed at phone/tablet widths. */
+@media (max-width: 767px) {
+    :root { --hangar-page-gutter: 0px; --hangar-page-radius: 0px; }
+    .hangar-header { padding-inline: var(--hangar-gutter); flex-wrap: wrap; }
+    .hangar-header .nav-pills { gap: 0.25rem; }
 }
