@@ -241,37 +241,37 @@ test('values are compared as strings, the way a select holds them', () => {
 });
 
 
-// --- startup paint: theme + hydration gate --------------------------------
-test('the first paint uses a theme bootstrap before external stylesheets', () => {
+// --- Cockpit appearance + hydration gate --------------------------------
+test('first paint follows Cockpit shell style before external CSS loads', () => {
     const fs = require('node:fs');
     const html = fs.readFileSync(__dirname + '/../../index.html', 'utf8');
     const css = fs.readFileSync(__dirname + '/../../css/hangar.css', 'utf8');
     assert.match(html, /<html[^>]*class="hangar-loading"/);
     assert.match(html, /html\.hangar-loading body\s*\{\s*visibility:\s*hidden/);
     assert.match(css, /\[x-cloak\]\s*\{\s*display:\s*none\s*!important/);
+    assert.doesNotMatch(html, /css\/themes\.css|js\/core\/themes\.js/);
     const match = html.match(/<script id="hangar-initial-theme">([\s\S]*?)<\/script>/);
-    assert.ok(match, 'initial theme script is missing');
-    assert.ok(html.indexOf('hangar-initial-theme') < html.indexOf('css/bootstrap.min.css'),
-        'theme must be resolved before the CSS can first paint');
+    assert.ok(match, 'initial Cockpit colour detection is missing');
+    assert.ok(html.indexOf('hangar-initial-theme') < html.indexOf('css/bootstrap.min.css'));
     const run = new Function('window', 'localStorage', 'document', match[1]);
     for (const [preference, osDark, expected] of [
         ['dark', false, 'dark'], ['light', true, 'light'],
         ['auto', true, 'dark'], ['auto', false, 'light']
     ]) {
-        let attr = null;
+        let applied = null;
         run({ matchMedia: () => ({ matches: osDark }) },
             { getItem: () => preference },
-            { documentElement: { setAttribute: (_k, v) => { attr = v; } } });
-        assert.equal(attr, expected);
+            { documentElement: { setAttribute: (_k, v) => { applied = v; } } });
+        assert.equal(applied, expected);
     }
     let fallback = null;
     run({ matchMedia: () => ({ matches: true }) },
         { getItem: () => { throw new Error('blocked'); } },
         { documentElement: { setAttribute: (_k, v) => { fallback = v; } } });
-    assert.equal(fallback, 'dark', 'blocked storage should fall back to OS dark mode');
+    assert.equal(fallback, 'dark');
 });
 
-test('the loading gate is removed only after Alpine has updated its bindings', () => {
+test('appearance loading gate is removed only after Alpine has updated its bindings', () => {
     const savedDocument = globalThis.document;
     const removed = [];
     globalThis.document = {
@@ -281,9 +281,8 @@ test('the loading gate is removed only after Alpine has updated its bindings', (
         const app = App.hangarApp();
         let nextTick = null;
         app.$nextTick = (callback) => { nextTick = callback; };
-        app._revealAfterTheme();
-        assert.deepEqual(removed, [], 'interface was shown before Alpine nextTick');
-        assert.equal(typeof nextTick, 'function');
+        app._revealAfterAppearance();
+        assert.deepEqual(removed, []);
         nextTick();
         assert.deepEqual(removed, ['hangar-loading']);
     } finally {
@@ -292,39 +291,45 @@ test('the loading gate is removed only after Alpine has updated its bindings', (
     }
 });
 
-test('explicit Cockpit light/dark preference overrides the OS in system mode', () => {
+test('Cockpit preference overrides the OS; custom Hangar themes are gone', () => {
     const saved = {
         document: globalThis.document,
         localStorage: globalThis.localStorage,
-        matchMedia: globalThis.matchMedia,
-        HangarThemes: globalThis.HangarThemes
+        matchMedia: globalThis.matchMedia
     };
     const applied = [];
     globalThis.document = { documentElement: {
         setAttribute: (_key, value) => applied.push(value)
     } };
     globalThis.matchMedia = () => ({ matches: false });
-    globalThis.HangarThemes = {
-        DEFAULT_THEME: 'system',
-        resolve: (id, dark) => ({ attr: id === 'system' ? (dark ? 'dark' : 'light') : id })
-    };
     try {
         const app = App.hangarApp();
-        app.settings = { theme: 'system' };
         globalThis.localStorage = { getItem: () => 'dark' };
-        app.applyTheme();
+        app.applyCockpitAppearance();
         assert.equal(applied.at(-1), 'dark');
         globalThis.localStorage = { getItem: () => 'light' };
         globalThis.matchMedia = () => ({ matches: true });
-        app.applyTheme();
+        app.applyCockpitAppearance();
         assert.equal(applied.at(-1), 'light');
-        app.applyTheme('dracula');
-        assert.equal(applied.at(-1), 'dracula',
-            'Hangar custom themes must retain precedence over the shell');
+        globalThis.localStorage = { getItem: () => 'auto' };
+        app.applyCockpitAppearance();
+        assert.equal(applied.at(-1), 'dark');
+        assert.equal(app.applyTheme, undefined);
     } finally {
         for (const [key, value] of Object.entries(saved)) {
             if (value === undefined) delete globalThis[key];
             else globalThis[key] = value;
         }
     }
+});
+
+test('Cockpit-style page has rounded gutters and flush mobile layout', () => {
+    const fs = require('node:fs');
+    const css = fs.readFileSync(__dirname + '/../../css/hangar.css', 'utf8');
+    assert.match(css, /--hangar-page-gutter:\s*1\.5rem/);
+    assert.match(css, /--hangar-page-radius:\s*1rem/);
+    assert.match(css, /border-radius:\s*var\(--hangar-page-radius\)/);
+    assert.match(css, /:root\[data-bs-theme="dark"\]/);
+    assert.match(css, /max-width:\s*767px/);
+    assert.match(css, /--hangar-page-gutter:\s*0px/);
 });
