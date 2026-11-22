@@ -1338,6 +1338,35 @@
                 }
             },
 
+            // Experimental live ISO. Intentionally separate from the existing
+            // non-bootable data ISO; the snapshot and host bootloader stay intact.
+            async createLiveIso() {
+                if (!this.moment || this.busy || typeof root.prompt !== 'function') return;
+                if (typeof root.confirm !== 'function' || !root.confirm(
+                    'EXPERIMENTAL LIVE ISO: requires a complete Linux system snapshot and ' +
+                    'Debian/Ubuntu/Mint live-boot tools on the host. The ISO will contain ' +
+                    'UNENCRYPTED passwords, keys and files. Test only in an isolated VM ' +
+                    'with no real drives attached. Continue?')) return;
+                const path = root.prompt('Save experimental bootable live ISO at an absolute path on this host:',
+                    '/var/tmp/hangar-live-' + this.moment.id.slice(0, 12) + '.iso');
+                if (!path) return;
+                this.beginBusy('Building experimental live ISO…');
+                this.clearStatus();
+                try {
+                    await cockpit.spawn(['/usr/libexec/hangar/hangar-portable', 'live-iso',
+                        this.repoId, this.moment.id, path.trim()],
+                        { superuser: 'require', err: 'message' });
+                    this.noticeKind = 'warning';
+                    this.notice = 'Experimental live ISO created at ' + path.trim() +
+                        '. Boot the safe inspection shell first in an isolated VM. ' +
+                        'Actual boot success has not yet been verified.';
+                } catch (e) {
+                    this.handleError(e);
+                } finally {
+                    this.endBusy();
+                }
+            },
+
             // --- restore ------------------------------------------------------
 
             async restore() {
@@ -1764,6 +1793,9 @@
 '      <button type="button" class="btn btn-sm btn-outline-secondary"' +
 '              title="Create an unencrypted data ISO from the selected complete snapshot (requires xorriso)."' +
 '              :disabled="!moment || busy" @click="createIso()">Create ISO…</button>' +
+        '      <button type="button" class="btn btn-sm btn-outline-warning"' +
+        '              title="Experimental: boot an entire Linux snapshot with a temporary RAM overlay. x86_64 Debian/Ubuntu/Mint only; requires live-boot, squashfs and GRUB."' +
+        '              :disabled="!moment || busy" @click="createLiveIso()">Live ISO (test)…</button>' +
 
      // Deliberately last, outline rather than solid, and disabled while anything
      // else is in flight: it is the one control on this screen that destroys
