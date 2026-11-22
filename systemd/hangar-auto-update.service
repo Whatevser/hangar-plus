@@ -1,0 +1,8 @@
+[Unit]
+Description=Update Hangar from the latest Whatevser/hangar-plus main commit
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/hangar/hangar-update apply --quiet

@@ -546,6 +546,10 @@
             diag: null,             // gathered diagnostics
             diagLoading: false,
             copyState: '',          // '' | 'copied' | 'failed'
+            updateState: { installed: '', latest: '', available: false, automatic: false },
+            updateBusy: false,
+            updateError: '',
+            updateMessage: '',
 
             // Appearance is deliberately NOT part of `form`. A theme is picked with
             // one deliberate click and its effect is immediately visible, so making
@@ -600,6 +604,7 @@
             async init() {
                 await this.load();
                 await this.loadDiagnostics();
+                await this.loadUpdateState();
             },
 
             async load() {
@@ -701,6 +706,71 @@
             revert() {
                 this.form = formFromSettings(this.saved);
                 this.savedAt = null;
+            },
+
+            // --- GitHub main-branch self updates ----------------------------
+            async updateCommand(args, privileged) {
+                if (typeof cockpit === 'undefined' || !cockpit || !cockpit.spawn)
+                    throw new Error('Cockpit is not available.');
+                const output = await cockpit.spawn(['/usr/libexec/hangar/hangar-update'].concat(args),
+                    { err: 'message', superuser: privileged ? 'require' : 'try' });
+                return JSON.parse(String(output).trim());
+            },
+            async loadUpdateState() {
+                this.updateError = '';
+                try {
+                    this.updateState = Object.assign({}, this.updateState,
+                        await this.updateCommand(['state'], false));
+                } catch (e) {
+                    this.updateError = errorText(e);
+                }
+            },
+            async checkUpdates() {
+                if (this.updateBusy) return;
+                this.updateBusy = true;
+                this.updateError = '';
+                this.updateMessage = '';
+                try {
+                    this.updateState = Object.assign({}, this.updateState,
+                        await this.updateCommand(['check'], false));
+                    if (!this.updateState.available) this.updateMessage = 'Already up to date.';
+                } catch (e) {
+                    this.updateError = errorText(e);
+                } finally {
+                    this.updateBusy = false;
+                }
+            },
+            async applyUpdate() {
+                if (this.updateBusy || !this.updateState.available) return;
+                this.updateBusy = true;
+                this.updateError = '';
+                this.updateMessage = '';
+                try {
+                    const result = await this.updateCommand(['apply'], true);
+                    this.updateState.installed = result.commit;
+                    this.updateState.available = false;
+                    this.updateMessage = result.updated
+                        ? 'Hangar updated. Reload Cockpit to use the new version.'
+                        : 'Already up to date.';
+                } catch (e) {
+                    this.updateError = errorText(e);
+                } finally {
+                    this.updateBusy = false;
+                }
+            },
+            async setAutoUpdates(enabled) {
+                if (this.updateBusy) return;
+                this.updateBusy = true;
+                this.updateError = '';
+                try {
+                    const result = await this.updateCommand(['auto', enabled ? 'on' : 'off'], true);
+                    this.updateState.automatic = !!result.automatic;
+                } catch (e) {
+                    this.updateError = errorText(e);
+                    this.updateState.automatic = !enabled;
+                } finally {
+                    this.updateBusy = false;
+                }
             },
 
             // --- diagnostics ---------------------------------------------
@@ -938,6 +1008,32 @@
         '      <span x-show="saving" class="text-secondary small">Saving…</span>',
         '    </div>',
         '  </form>',
+
+        // --- self update --------------------------------------------------
+        '  <section aria-labelledby="hangar-update-title">',
+        '    <h3 class="h6" id="hangar-update-title">Hangar updates</h3>',
+        '    <div class="form-text mb-2">Checks the latest commit on Whatevser/hangar-plus main,',
+        '      like binup. Configuration and repository keys are not replaced.</div>',
+        '    <div class="form-check form-switch mb-2">',
+        '      <input class="form-check-input" type="checkbox" id="hangar-autoupdate"',
+        '             :checked="updateState.automatic" :disabled="updateBusy"',
+        '             @change="setAutoUpdates($event.target.checked)">',
+        '      <label class="form-check-label" for="hangar-autoupdate">Automatic updates (twice daily)</label>',
+        '    </div>',
+        '    <div class="d-flex gap-2 align-items-center flex-wrap mb-2">',
+        '      <button type="button" class="btn btn-sm btn-outline-secondary" :disabled="updateBusy"',
+        '              @click="checkUpdates()">Check GitHub</button>',
+        '      <button type="button" class="btn btn-sm btn-primary" :disabled="updateBusy || !updateState.available"',
+        '              @click="applyUpdate()">Install update</button>',
+        '      <span class="small text-secondary" x-show="updateBusy">Working…</span>',
+        '    </div>',
+        '    <div class="small hangar-mono" x-show="updateState.installed">Installed commit: ',
+        '      <span x-text="updateState.installed.slice(0, 12)"></span></div>',
+        '    <div class="small hangar-mono" x-show="updateState.latest">Latest commit: ',
+        '      <span x-text="updateState.latest.slice(0, 12)"></span></div>',
+        '    <div class="alert alert-danger py-2 mt-2" role="alert" x-show="updateError" x-text="updateError"></div>',
+        '    <div class="alert alert-info py-2 mt-2" role="status" x-show="updateMessage" x-text="updateMessage"></div>',
+        '  </section>',
 
         // --- diagnostics --------------------------------------------------
         '  <section aria-labelledby="hangar-diagnostics-title">',

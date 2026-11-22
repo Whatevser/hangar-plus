@@ -956,6 +956,32 @@
                 }
             },
 
+            async createAccessKit(row) {
+                if (!row || !row.repo || row.repo.kind !== 'local' || row.busy) return;
+                const d = dialogs();
+                if (!d || typeof d.confirmDialog !== 'function') return;
+                try {
+                    await d.confirmDialog({
+                        title: 'Place the repository password beside its backups?',
+                        message: 'This creates hangar-access.key and hangar-access.sh inside ' + row.repo.path + '.',
+                        detail: 'Anyone who gets a copy of this repository can then decrypt everything in it. This is optional and applies to existing backups as well. The key stays readable only by root on this machine.',
+                        confirmLabel: 'Create access kit'
+                    });
+                } catch (e) {
+                    return;
+                }
+                row.busy = 'access-kit';
+                try {
+                    const output = await cockpit.spawn(['/usr/libexec/hangar/hangar-portable',
+                        'access-kit', row.id], { superuser: 'require', err: 'message' });
+                    row.alert = okAlert('Access kit', String(output).trim(), row.id);
+                } catch (e) {
+                    row.alert = toAlert(e, 'Create access kit', row.id);
+                } finally {
+                    row.busy = '';
+                }
+            },
+
             async testConnection(row) {
                 row.busy = 'test';
                 row.alert = null;
@@ -1460,7 +1486,10 @@
         '                    :disabled="!!row.busy" :aria-label="\'Check \' + row.title">Check</button>',
         '            <button type="button" class="btn btn-outline-secondary" @click="unlock(row)"',
         '                    :disabled="!!row.busy" :aria-label="\'Unlock \' + row.title">Unlock</button>',
-        '            <button type="button" class="btn btn-outline-secondary" @click="openEdit(row)"',
+        '            <button type="button" class="btn btn-outline-secondary" x-show="row.repo.kind === \'local\'"' +
+'                    title="Optionally place a plaintext restic key and access script alongside this local repository."' +
+'                    @click="createAccessKit(row)" :disabled="!!row.busy">Access kit</button>',
+'            <button type="button" class="btn btn-outline-secondary" @click="openEdit(row)"',
         '                    :disabled="!!row.busy" :aria-label="\'Edit \' + row.title">Edit</button>',
         '            <button type="button" class="btn btn-outline-danger" @click="remove(row)"',
         '                    :disabled="!!row.busy" :aria-label="\'Remove \' + row.title">Remove</button>',

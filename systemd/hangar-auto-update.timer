@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for Hangar updates twice daily
+
+[Timer]
+OnCalendar=*-*-* 06,18:00:00
+Persistent=true
+RandomizedDelaySec=10min
+Unit=hangar-auto-update.service
+
+[Install]
+WantedBy=timers.target

@@ -31,6 +31,37 @@ ZIP in your browser. In the restore dialog, **Restore without original parent
 folders** puts selected items directly in the destination and preserves the
 structure inside selected folders.
 
+
+**Import snapshot** in the Logbook takes the absolute path to a ZIP snapshot
+export or data ISO **on the Cockpit host** and writes its contents as a new
+encrypted restic snapshot in the selected repository. A browser download must
+first be copied to that host. The imported snapshot is tagged `hangar-import`;
+its original capture time and restic snapshot ID are *not* preserved. Its
+recorded root is the temporary extraction path, so use **Restore without original
+parent folders** to restore those files somewhere useful. For an existing intact
+restic repository, do **not** import or re-encrypt it: just use **Repositories →
+Add repository**, provide the original location and password, and Hangar
+recognizes it without `restic init` changing it.
+
+**Create ISO** on a selected Logbook snapshot writes a non-bootable data ISO
+at the absolute path you choose on the host. This requires `xorriso`
+(installed through your distribution's package manager) and enough free
+space for both the extracted snapshot and ISO; temporary files are removed
+afterwards. **Both ZIP and ISO contain decrypted data.** ISO does not replace a
+restic repository or provide Linux filesystem fidelity equivalent to restic.
+
+Restic passwords are saved separately in `/etc/hangar/repos/<id>.key` and
+are not embedded in the encrypted repository. You can reattach a surviving
+repository after reinstalling Hangar if you know its password. For an
+existing **local** repository, **Repositories → Access kit** optionally puts
+`hangar-access.key` (root-readable) and `hangar-access.sh` next to its
+restic data, including snapshots made earlier. The script accepts normal
+restic arguments (for example `sudo ./hangar-access.sh snapshots`).
+**This deliberately removes meaningful at-rest encryption against anyone
+who can copy that repository directory.** The kit is never generated silently
+and is not supported for cloud destinations.
+
+
 **Anywhere for a destination.** Local disk, USB, SFTP, a REST server, Amazon S3,
 Backblaze B2, Azure, Google Cloud Storage, or any
 [rclone](https://rclone.org/overview/) remote — which covers most of the rest.
@@ -175,6 +206,16 @@ sudo systemctl try-restart cockpit
 ```
 
 Then open Cockpit and choose **Hangar** in the sidebar.
+
+**Self-update:** Settings → Hangar updates checks the latest commit on
+[Whatevser/hangar-plus](https://github.com/Whatevser/hangar-plus)'s `main`
+branch. **Check GitHub** previews whether a newer commit exists; **Install
+update** applies it without replacing `/etc/hangar` or stored repository
+passwords. The **Automatic updates** switch enables a systemd timer
+(`hangar-auto-update.timer`) which checks and installs twice per day,
+including missed runs after boot. It is **off by default** until enabled.
+The updater replaces the installed Cockpit files and helper scripts but does
+not run any recovery or VM operations. Reload Cockpit after a manual update.
 
 To remove it:
 

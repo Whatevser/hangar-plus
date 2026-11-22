@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Explicit ZIP/ISO snapshot portability and optional local repository access kit.
+
+This is not a machine image or a bootable rescue tool. ISO exports contain
+decrypted snapshot files. Imported archives become NEW restic snapshots.
+"""
+import json
+import os
+import re
+import runpy
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import zipfile
+from pathlib import Path, PurePosixPath
+
+CONF = "/etc/hangar"
+RUNNER = "/usr/libexec/hangar/hangar-run"
+CACHE = "/var/cache/hangar/restic"
+SNAPSHOT_RE = re.compile(r"[0-9a-fA-F]{64}\Z")
+REPO_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62})\Z")
+
+
+def abort(message):
+    raise ValueError(message)
+
+
+def valid_path(value, suffixes=()):
+    path = Path(value)
+    if not path.is_absolute() or "\0" in value or "\n" in value:
+        abort("Specify an absolute path on the Cockpit host.")
+    if suffixes and path.suffix.lower() not in suffixes:
+        abort("Expected a " + " or ".join(suffixes) + " file.")
+    return path
+
+
+def repository(repo_id):
+    if not REPO_RE.fullmatch(repo_id):
+        abort("Invalid repository ID.")
+    with open(Path(CONF) / "repos" / (repo_id + ".json"), encoding="utf-8") as fh:
+        definition = json.load(fh)
+    if not isinstance(definition, dict):
+        abort("Invalid repository definition.")
+    key = Path(CONF) / "repos" / (repo_id + ".key")
+    if not key.is_file():
+        abort("Repository password is missing. Enter it again in Repositories first.")
+    # Reuse exactly the existing runner's backend URL and credential handling.
+    runner = runpy.run_path(RUNNER, run_name="hangar_portable")
+    url = runner["repo_url"](definition)
+    env = dict(os.environ, **runner["backend_env"](definition))
+    args = ["restic", "-r", url, "--password-file", str(key),
+            "--cache-dir", CACHE]
+    return definition, args, env
+
+
+def source_archive(path, target):
+    if not path.is_file():
+        abort("Archive does not exist on the Cockpit host.")
+    if path.suffix.lower() == ".zip":
+        with zipfile.ZipFile(path) as archive:
+            links = []
+            for info in archive.infolist():
+                name = info.filename
+                parts = PurePosixPath(name).parts
+                if (name.startswith("/") or "\\" in name or
+                        not parts or any(p in ("", ".", "..") for p in parts)):
+                    abort("Unsafe path in ZIP: " + name)
+                mode = (info.external_attr >> 16) & 0o170000
+                if mode not in (0, stat.S_IFDIR, stat.S_IFREG, stat.S_IFLNK):
+                    abort("ZIP contains a special file: " + name)
+                dest = target.joinpath(*parts)
+                if mode == stat.S_IFLNK:
+                    with archive.open(info) as inp:
+                        link = inp.read(8193)
+                    if len(link) > 8192:
+                        abort("Oversized symbolic link in ZIP: " + name)
+                    links.append((dest, link.decode("utf-8", errors="surrogateescape")))
+                elif info.is_dir():
+                    dest.mkdir(parents=True, exist_ok=True)
+                else:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    with archive.open(info) as inp, open(dest, "xb") as out:
+                        shutil.copyfileobj(inp, out, length=1024 * 1024)
+            # Links are created last so no archive member can be extracted
+            # through one. Refuse links escaping the temporary extraction tree.
+            for dest, link in links:
+                if (os.path.isabs(link) or
+                        not (dest.parent / link).resolve().is_relative_to(target.resolve())):
+                    abort("Symbolic link escapes ZIP extraction: " + str(dest))
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.symlink_to(link)
+    elif path.suffix.lower() == ".iso":
+        if not shutil.which("xorriso"):
+            abort("xorriso is required to import ISO files.")
+        subprocess.run(["xorriso", "-osirrox", "on", "-indev", str(path),
+                        "-extract", "/", str(target)], check=True,
+                       stdout=subprocess.DEVNULL)
+    else:
+        abort("Import supports only ZIP and ISO snapshots.")
+
+
+def import_archive(repo_id, filename):
+    path = valid_path(filename, (".zip", ".iso"))
+    if not path.is_file():
+        abort("No archive at " + str(path))
+    _, args, env = repository(repo_id)
+    with tempfile.TemporaryDirectory(prefix="hangar-import-") as work:
+        target = Path(work) / "contents"
+        target.mkdir()
+        print("Extracting the snapshot archive...", flush=True)
+        source_archive(path, target)
+        if not any(target.iterdir()):
+            abort("The archive is empty; no snapshot was imported.")
+        print("Creating a new encrypted restic snapshot...", flush=True)
+        # The temporary extraction path is recorded in this new snapshot;
+        # use Logbook's 'Restore without original parent folders' on restore.
+        subprocess.run(args + ["backup", "--tag", "hangar-import", "--",
+                               str(target)], env=env, check=True)
+        print("Imported snapshot into " + repo_id + ".", flush=True)
+
+
+def export_iso(repo_id, snapshot, filename):
+    if not SNAPSHOT_RE.fullmatch(snapshot):
+        abort("Select a full snapshot ID.")
+    output = valid_path(filename, (".iso",))
+    if output.exists():
+        abort("The destination ISO already exists; choose a new name.")
+    if not output.parent.is_dir():
+        abort("The destination directory does not exist.")
+    if not shutil.which("xorriso"):
+        abort("xorriso is required to create an ISO image.")
+    _, args, env = repository(repo_id)
+    # Stage near the destination rather than filling /tmp when the snapshot is large.
+    with tempfile.TemporaryDirectory(prefix=".hangar-iso-", dir=output.parent) as work:
+        source = Path(work) / "contents"
+        source.mkdir()
+        staging_iso = Path(work) / "image.iso"
+        print("Decrypting snapshot into temporary files...", flush=True)
+        subprocess.run(args + ["restore", "--target", str(source), snapshot],
+                       env=env, check=True, stdout=subprocess.DEVNULL)
+        print("Creating data ISO (not bootable)...", flush=True)
+        subprocess.run(["xorriso", "-as", "mkisofs", "-iso-level", "3",
+                        "-R", "-J", "-o", str(staging_iso), str(source)],
+                       check=True, stdout=subprocess.DEVNULL)
+        if output.exists():
+            abort("The destination was created while the ISO was being built.")
+        os.replace(staging_iso, output)
+    print("ISO created: " + str(output), flush=True)
+
+
+def export_access_kit(repo_id):
+    definition, _, _ = repository(repo_id)
+    if definition.get("kind") != "local":
+        abort("Access kits alongside the backup are available for local repositories only.")
+    folder = valid_path(str(definition.get("path", "")))
+    if not folder.is_dir() or not (folder / "config").is_file():
+        abort("Local restic repository directory does not exist.")
+    key_file = Path(CONF) / "repos" / (repo_id + ".key")
+    key_dest = folder / "hangar-access.key"
+    script_dest = folder / "hangar-access.sh"
+    if key_dest.exists() or script_dest.exists():
+        abort("An access kit already exists here. Refusing to overwrite it.")
+    script = ("""#!/bin/sh
+set -eu
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec restic -r "$here" --password-file "$here/hangar-access.key" "$@"
+""")
+    try:
+        fd = os.open(key_dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(key_file.read_bytes())
+        fd = os.open(script_dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o700)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(script)
+    except BaseException:
+        key_dest.unlink(missing_ok=True)
+        script_dest.unlink(missing_ok=True)
+        raise
+    print("Access kit created in " + str(folder), flush=True)
+    print("WARNING: Anyone with this directory can now decrypt the backups.", flush=True)
+
+
+def main(argv):
+    if os.geteuid() != 0:
+        abort("Administrator access is required.")
+    if len(argv) == 4 and argv[1] == "import":
+        import_archive(argv[2], argv[3])
+    elif len(argv) == 5 and argv[1] == "iso":
+        export_iso(argv[2], argv[3], argv[4])
+    elif len(argv) == 3 and argv[1] == "access-kit":
+        export_access_kit(argv[2])
+    else:
+        abort("Usage: hangar-portable import REPO FILE.zip|FILE.iso | iso REPO SNAPSHOT OUTPUT.iso | access-kit REPO")
+
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv)
+    except (ValueError, OSError, subprocess.CalledProcessError, zipfile.BadZipFile) as exc:
+        print("Hangar: " + str(exc), file=sys.stderr)
+        sys.exit(1)
