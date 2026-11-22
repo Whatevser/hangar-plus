@@ -52,8 +52,8 @@ temporary private storage, builds `live/filesystem.squashfs`, generates a
 **fresh live-boot initramfs from the currently running machine's exact kernel**,
 and uses GRUB to construct a bootable ISO for BIOS/UEFI. Its default menu
 option opens a **non-networked inspection shell** (`init=/bin/bash`) without
-starting the snapshot's services. A second experimental entry starts systemd
-in multi-user mode. The root uses a temporary RAM overlay; changes to this
+starting the snapshot's services. Additional experimental entries start the backed-up system in text console
+or graphical desktop mode. The root uses a temporary RAM overlay; changes to this
 live session are discarded. It **does not restore or overwrite any disks**.
 
 A complete snapshot of the same OS version must include the matching kernel
