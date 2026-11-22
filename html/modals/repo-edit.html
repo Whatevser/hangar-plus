@@ -62,13 +62,18 @@
                     <div class="mb-3">
                         <label class="form-label" for="hangar-repo-kind">Backend</label>
                         <select id="hangar-repo-kind" class="form-select"
-                                :value="kind" @change="setKind($event.target.value)">
+                                :value="kind" :disabled="mode === 'import'" @change="setKind($event.target.value)">
                             <template x-for="k in kinds" :key="k.value">
                                 <option :value="k.value" :selected="k.value === kind" x-text="k.label"></option>
                             </template>
                         </select>
                     </div>
 
+                    <p class="small text-secondary" x-show="mode === 'import'">
+                        Select the existing restic repository directory. Hangar verifies the
+                        password and snapshots before attaching it, without initializing,
+                        copying or changing the repository's data.
+                    </p>
                     <!-- Kind-driven fields. -->
                     <template x-for="f in fields()" :key="f.name">
                         <div class="mb-3">
@@ -233,7 +238,7 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="submit" class="btn btn-primary"
-                            x-text="mode === 'edit' ? 'Save' : 'Create repository'"></button>
+                            x-text="mode === 'edit' ? 'Save' : (mode === 'import' ? 'Import repository' : 'Create repository')"></button>
                 </div>
 
             </form>

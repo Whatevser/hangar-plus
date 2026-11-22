@@ -2189,3 +2189,73 @@ test('an unreadable cache is simply no cache, not a failed row', async () => {
     assert.equal(row.stats.size, 4096);
     assert.equal(row.busy, '');
 });
+
+
+test('import existing repository verifies snapshots before saving and NEVER initializes it', async () => {
+    const c = Ui.hangarReposUi();
+    const calls = [];
+    c.rows = [];
+    c.refresh = async () => {};
+    c.announceChange = () => { calls.push('announced'); };
+    const repo = { id: 'existing-import', kind: 'local', path: '/backup/restic' };
+    await withDialogs({ passwordDialog: async (options) => {
+        assert.equal(options.confirming, false);
+        return 'original-secret';
+    } }, () => withStubs([
+        [Config, 'listRepos', async () => []],
+        [Secrets, 'writeKey', async (id, value) => { calls.push('key'); assert.equal(value, 'original-secret'); }],
+        [Secrets, 'removeKey', async () => { throw Error('should not remove verified key'); }],
+        [Config, 'writeRepo', async (value) => { assert.equal(value, repo); calls.push('registered'); }]
+    ], () => withCockpit({ spawn: async (argv) => {
+        calls.push(argv);
+        return '[]';
+    } }, () => c.importExisting(repo))));
+    assert.equal(c.alert.level, 'success');
+    assert.match(c.alert.message, /0 snapshot/);
+    assert.ok(calls.some(x => Array.isArray(x) && x.includes('snapshots')));
+    assert.ok(!calls.some(x => Array.isArray(x) && x.includes('init')));
+    assert.ok(calls.indexOf('registered') > calls.findIndex(x => Array.isArray(x) && x.includes('snapshots')));
+});
+
+test('existing repository import refuses wrong password without saving a definition', async () => {
+    const c = Ui.hangarReposUi();
+    const repo = { id: 'existing-import', kind: 'local', path: '/backup/restic' };
+    let cleaned = 0, registered = 0;
+    await withDialogs({ passwordDialog: async () => 'wrong' }, () => withStubs([
+        [Config, 'listRepos', async () => []],
+        [Secrets, 'writeKey', async () => {}],
+        [Secrets, 'removeKey', async () => { cleaned++; }],
+        [Config, 'writeRepo', async () => { registered++; }]
+    ], () => withCockpit({ spawn: rejectsWith(12, 'wrong password') }, () => c.importExisting(repo))));
+    assert.equal(registered, 0);
+    assert.equal(cleaned, 1);
+    assert.equal(c.loading, false);
+    assert.equal(c.alert.level, 'danger');
+});
+
+test('existing repository import refuses an absent repo without creating one', async () => {
+    const c = Ui.hangarReposUi();
+    const repo = { id: 'absent', kind: 'local', path: '/missing' };
+    let cleaned = 0, registered = 0;
+    await withDialogs({ passwordDialog: async () => 'correct' }, () => withStubs([
+        [Config, 'listRepos', async () => []],
+        [Secrets, 'writeKey', async () => {}],
+        [Secrets, 'removeKey', async () => { cleaned++; }],
+        [Config, 'writeRepo', async () => { registered++; }]
+    ], () => withCockpit({ spawn: rejectsWith(10, 'repository does not exist') }, () => c.importExisting(repo))));
+    assert.equal(cleaned, 1);
+    assert.equal(registered, 0);
+    assert.equal(c.alert.level, 'danger');
+});
+
+test('the import dialog locks its backend to local and uses a distinct submit label', () => {
+    const c = Ui.hangarRepoEdit();
+    c.receive({ mode: 'import', form: { id: 'old', kind: 's3', path: '/backup' }, existingIds: [] });
+    assert.equal(c.mode, 'import');
+    assert.equal(c.kind, 'local');
+    assert.equal(c.fields().find((field) => field.name === 'path').browse, 'dir');
+    c.setKind('rclone');
+    assert.equal(c.kind, 'local');
+    assert.match(MODAL, /mode === 'import'.*'Import repository'/);
+    assert.match(Ui.TEMPLATE, /Import existing/);
+});

@@ -848,6 +848,74 @@
                 if (repo) await this.create(repo);
             },
 
+            async openImport() {
+                const repo = await repoEditDialog({
+                    mode: 'import', form: blankForm('local'), existingIds: this.existingIds()
+                });
+                if (repo) await this.importExisting(repo);
+            },
+
+            // Attach an intact restic repository. Unlike Add, NEVER call restic init:
+            // a valid password and a successfully parsed snapshot list are required
+            // before the repository definition is saved.
+            async importExisting(repo) {
+                if (!repo || repo.kind !== 'local') {
+                    this.alert = toAlert(Errors.create(Errors.KIND.GENERIC,
+                        'Import existing repository requires a local restic folder.'), 'Import repository');
+                    return false;
+                }
+                const d = dialogs();
+                if (!d) return false;
+                let password;
+                try {
+                    password = await d.passwordDialog({
+                        title: 'Password for the existing repository',
+                        repoLabel: Repos.describe(repo),
+                        confirming: false
+                    });
+                } catch (e) {
+                    this.alert = toAlert(e, 'Import repository', repo.id);
+                    return false;
+                }
+                if (!password) return false;
+
+                this.loading = true;
+                this.alert = null;
+                let keyAttempted = false;
+                let imported = false;
+                try {
+                    if (this.existingIds().includes(repo.id) ||
+                            (await Config.listRepos()).includes(repo.id))
+                        throw Errors.create(Errors.KIND.GENERIC, 'This repository ID is already in use.');
+
+                    keyAttempted = true;
+                    await Secrets.writeKey(repo.id, password);
+                    const snapshots = Restic.parseSnapshots(
+                        await runDocument('snapshots', resticOptions(repo)));
+                    await Config.writeRepo(repo);
+                    imported = true;
+                    this.alert = okAlert('Import repository',
+                        'Existing repository attached unchanged: ' + snapshots.length +
+                        ' snapshot(s) verified.', repo.id);
+                    return true;
+                } catch (e) {
+                    this.alert = toAlert(classifyRepoFailure(e, repo), 'Import repository', repo.id);
+                    return false;
+                } finally {
+                    if (!imported && keyAttempted) {
+                        try { await Secrets.removeKey(repo.id); }
+                        catch (e) {
+                            this.alert = toAlert(e, 'Cleaning up an unsuccessful import', repo.id);
+                        }
+                    }
+                    this.loading = false;
+                    if (imported) {
+                        await this.refresh();
+                        this.announceChange();
+                    }
+                }
+            },
+
             async openEdit(row) {
                 const repo = await repoEditDialog({
                     mode: 'edit',
@@ -1235,13 +1303,14 @@
 
             receive(o) {
                 o = o && typeof o === 'object' ? o : {};
-                this.mode = o.mode === 'edit' ? 'edit' : 'add';
+                this.mode = o.mode === 'edit' ? 'edit' : (o.mode === 'import' ? 'import' : 'add');
                 const seed = o.form && typeof o.form === 'object' ? o.form : null;
                 this.form = seed ? Object.assign(blankForm(seed.kind), seed) : blankForm('local');
                 // A kind the form carries but this build does not know would render a
                 // dialog with no fields and no way out. blankForm already fell back
                 // to local; make the label agree with the fields it is showing.
-                this.kind = isKind(this.form.kind) ? str(this.form.kind) : 'local';
+                this.kind = this.mode === 'import' ? 'local' :
+                    (isKind(this.form.kind) ? str(this.form.kind) : 'local');
                 this.form.kind = this.kind;
                 this.existingIds = Array.isArray(o.existingIds) ? o.existingIds : [];
                 this.problems = [];
@@ -1251,11 +1320,17 @@
             },
 
             title() {
-                return this.mode === 'edit' ? 'Edit repository' : 'Add repository';
+                return this.mode === 'edit' ? 'Edit repository' :
+                    (this.mode === 'import' ? 'Import existing repository' : 'Add repository');
             },
 
             fields() {
-                return fieldsFor(this.kind);
+                const fields = fieldsFor(this.kind);
+                // The existing repository path is chosen through the normal
+                // folder picker; no ZIP, ISO, or browser-upload step involved.
+                return this.mode === 'import'
+                    ? fields.map((f) => f.name === 'path' ? Object.assign({}, f, { browse: 'dir' }) : f)
+                    : fields;
             },
 
             // --- the size limit --------------------------------------------
@@ -1265,6 +1340,7 @@
             guardTradeoffs() { return GUARD_TRADEOFFS.slice(); },
 
             setKind(kind) {
+                if (this.mode === 'import') return; // imported repositories are local folders
                 // <select> can only offer the kinds we listed, but the method is also
                 // the programmatic entry point — coerce rather than render an empty
                 // form for a kind that has no fields.
@@ -1407,6 +1483,7 @@
         '    <h5 class="mb-0 flex-grow-1">Repositories</h5>',
         '    <button type="button" class="btn btn-sm btn-outline-secondary" @click="refresh()"',
         '            :disabled="loading" aria-label="Refresh repositories">Refresh</button>',
+        '    <button type="button" class="btn btn-sm btn-outline-secondary" @click="openImport()">Import existing…</button>',
         '    <button type="button" class="btn btn-sm btn-primary" @click="openAdd()">Add repository</button>',
         '  </div>',
 
