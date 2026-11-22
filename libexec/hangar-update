@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""Hangar self-update from the latest verified GitHub main-branch commit.
+
+Runs independently of Cockpit (including from a systemd timer), retains all
+/etc/hangar settings and passwords, and swaps the plugin directory with rollback.
+"""
+import fcntl
+import io
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+from pathlib import Path, PurePosixPath
+
+REPO = "Whatevser/hangar-plus"
+API = "https://api.github.com/repos/" + REPO + "/commits/main"
+ARCHIVE = "https://codeload.github.com/" + REPO + "/tar.gz/"
+PLUGIN = Path("/usr/share/cockpit/hangar")
+EXEC = Path("/usr/libexec/hangar")
+CONF = Path("/etc/hangar")
+COMMIT_FILE = CONF / "installed-commit"
+LOCK_FILE = "/run/lock/hangar-update.lock"
+TIMER = "hangar-auto-update.timer"
+FILES = {
+    "manifest.json", "index.html", "README.md", "CHANGELOG.md",
+    "VERSION", "Makefile", "css", "js", "html", "screenshots", "libexec"
+}
+EXECUTABLES = ("hangar-run", "hangar-portable", "hangar-update")
+
+
+def request(url):
+    req = urllib.request.Request(url, headers={
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "hangar-plus-updater",
+    })
+    return urllib.request.urlopen(req, timeout=40)
+
+
+def latest_commit():
+    with request(API) as response:
+        document = json.load(response)
+    sha = document.get("sha", "")
+    if not isinstance(sha, str) or len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha):
+        raise RuntimeError("Unexpected GitHub commit response")
+    return sha
+
+
+def installed_commit():
+    try:
+        sha = COMMIT_FILE.read_text(encoding="ascii").strip()
+        return sha if len(sha) == 40 else ""
+    except OSError:
+        return ""
+
+
+def is_enabled():
+    return subprocess.run(["systemctl", "is-enabled", "--quiet", TIMER],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+
+def state(include_latest=False):
+    current = installed_commit()
+    result = {"installed": current, "automatic": is_enabled()}
+    if include_latest:
+        latest = latest_commit()
+        result.update({"latest": latest, "available": current != latest})
+    return result
+
+
+def fetch_archive(sha, destination):
+    # Immutable commit archive; do not execute Makefile or arbitrary scripts from it.
+    with request(ARCHIVE + sha) as response, open(destination, "wb") as out:
+        copied = 0
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            copied += len(chunk)
+            if copied > 80 * 1024 * 1024:
+                raise RuntimeError("GitHub archive is unexpectedly large")
+            out.write(chunk)
+
+
+def unpack(source, destination):
+    with tarfile.open(source, mode="r:gz") as archive:
+        for member in archive:
+            parts = PurePosixPath(member.name).parts
+            if len(parts) < 2 or ".." in parts or "\\" in member.name:
+                continue
+            relative = Path(*parts[1:])
+            if not relative.parts or relative.parts[0] not in FILES:
+                continue
+            if member.issym() or member.islnk() or not (member.isdir() or member.isfile()):
+                raise RuntimeError("Refusing a special archive entry: " + member.name)
+            target = destination / relative
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                stream = archive.extractfile(member)
+                if stream is None:
+                    raise RuntimeError("Missing archive entry " + member.name)
+                with stream, open(target, "wb") as out:
+                    shutil.copyfileobj(stream, out)
+                target.chmod(member.mode & 0o777)
+    for name in ("index.html", "manifest.json", "VERSION", "libexec/hangar-run",
+                 "libexec/hangar-portable", "libexec/hangar-update"):
+        if not (destination / name).is_file():
+            raise RuntimeError("Incomplete GitHub archive: missing " + name)
+
+
+def atomic_copy(source, dest, mode=0o755):
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=dest.parent, delete=False) as f:
+        temporary = Path(f.name)
+    try:
+        shutil.copyfile(source, temporary)
+        temporary.chmod(mode)
+        os.replace(temporary, dest)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def apply():
+    if os.geteuid() != 0:
+        raise RuntimeError("Administrator access required to update Hangar")
+    CONF.mkdir(mode=0o755, parents=True, exist_ok=True)
+    with open(LOCK_FILE, "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        new_sha = latest_commit()
+        current = installed_commit()
+        if current == new_sha:
+            print(json.dumps({"updated": False, "commit": current}))
+            return
+        with tempfile.TemporaryDirectory(prefix=".hangar-update-", dir=PLUGIN.parent) as work:
+            work = Path(work)
+            fetch_archive(new_sha, work / "archive.tar.gz")
+            source = work / "source"
+            source.mkdir()
+            unpack(work / "archive.tar.gz", source)
+            stage = work / "stage"
+            stage.mkdir()
+            for name in FILES:
+                origin = source / name
+                if origin.is_dir():
+                    shutil.copytree(origin, stage / name)
+                elif origin.is_file():
+                    shutil.copy2(origin, stage / name)
+            previous = work / "previous"
+            was_installed = PLUGIN.exists()
+            if was_installed:
+                os.rename(PLUGIN, previous)
+            try:
+                os.rename(stage, PLUGIN)
+            except BaseException:
+                if was_installed:
+                    os.rename(previous, PLUGIN)
+                raise
+            # The executable scripts are not part of the Cockpit directory.
+            for name in EXECUTABLES:
+                atomic_copy(source / "libexec" / name, EXEC / name)
+            atomic_copy(source / "VERSION", CONF / "installed-version", 0o644)
+            atomic_copy(source / "VERSION", PLUGIN / "VERSION", 0o644)
+            atomic_copy(source / "systemd" / "hangar-auto-update.service",
+                        Path("/etc/systemd/system/hangar-auto-update.service"), 0o644)
+            atomic_copy(source / "systemd" / "hangar-auto-update.timer",
+                        Path("/etc/systemd/system/hangar-auto-update.timer"), 0o644)
+            subprocess.run(["systemctl", "daemon-reload"], check=True)
+            COMMIT_FILE.write_text(new_sha + "\n", encoding="ascii")
+            COMMIT_FILE.chmod(0o644)
+        print(json.dumps({"updated": True, "commit": new_sha, "previous": current}))
+
+
+def auto(enabled):
+    if os.geteuid() != 0:
+        raise RuntimeError("Administrator access required to configure updates")
+    verb = ["enable", "--now"] if enabled else ["disable", "--now"]
+    subprocess.run(["systemctl", *verb, TIMER], check=True)
+    print(json.dumps({"automatic": is_enabled()}))
+
+
+def main(args):
+    if args == ["check"]:
+        print(json.dumps(state(True)))
+    elif args == ["state"]:
+        print(json.dumps(state()))
+    elif args == ["apply"] or args == ["apply", "--quiet"]:
+        apply()
+    elif args == ["auto", "on"]:
+        auto(True)
+    elif args == ["auto", "off"]:
+        auto(False)
+    else:
+        raise RuntimeError("Usage: hangar-update check|state|apply|auto on|auto off")
+
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv[1:])
+    except Exception as exc:
+        print("Hangar update: " + str(exc), file=sys.stderr)
+        sys.exit(1)
