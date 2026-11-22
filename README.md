@@ -32,34 +32,46 @@ folders** puts selected items directly in the destination and preserves the
 structure inside selected folders.
 
 
-**Import snapshot** in the Logbook takes the absolute path to a ZIP snapshot
-export or data ISO **on the Cockpit host** and writes its contents as a new
-encrypted restic snapshot in the selected repository. A browser download must
-first be copied to that host. The imported snapshot is tagged `hangar-import`;
-its original capture time and restic snapshot ID are *not* preserved. Its
-recorded root is the temporary extraction path, so use **Restore without original
-parent folders** to restore those files somewhere useful. For an existing intact
-restic repository, do **not** import or re-encrypt it: just use **Repositories →
-Add repository**, provide the original location and password, and Hangar
-recognizes it without `restic init` changing it.
+**Import existing repository** (Repositories → Import existing…) attaches an
+existing local restic repository folder without copying its data or running
+\`restic init\`. Enter the directory that contains restic's \`config\` file and
+the original password. Hangar must successfully list its snapshots **before**
+it saves a new repository definition. If verification fails, the temporary
+stored password is removed and the repository stays unregistered. This is
+the correct way to use an intact backup after reinstalling the system.
 
-**Create ISO** on a selected Logbook snapshot writes a non-bootable data ISO
-at the absolute path you choose on the host. This requires `xorriso`
-(installed through your distribution's package manager) and enough free
-space for both the extracted snapshot and ISO; temporary files are removed
-afterwards. **Both ZIP and ISO contain decrypted data.** ISO does not replace a
-restic repository or provide Linux filesystem fidelity equivalent to restic.
+**Create ISO** in the Logbook writes a **decrypted, non-bootable data ISO**
+for the selected snapshot. It requires \`xorriso\`, plus free space for the
+temporary restored files and the finished ISO. It is not a clone of the
+encrypted restic repository, and it cannot preserve all Linux metadata.
 
-Restic passwords are saved separately in `/etc/hangar/repos/<id>.key` and
-are not embedded in the encrypted repository. You can reattach a surviving
-repository after reinstalling Hangar if you know its password. For an
-existing **local** repository, **Repositories → Access kit** optionally puts
-`hangar-access.key` (root-readable) and `hangar-access.sh` next to its
-restic data, including snapshots made earlier. The script accepts normal
-restic arguments (for example `sudo ./hangar-access.sh snapshots`).
-**This deliberately removes meaningful at-rest encryption against anyone
-who can copy that repository directory.** The kit is never generated silently
-and is not supported for cloud destinations.
+The original restic password is stored separately at
+\`/etc/hangar/repos/<id>.key\` and is NOT embedded in the encrypted
+repository. To use the backup independently of Hangar, local repositories
+offer an opt-in **Access kit** action that places \`hangar-access.key\` and
+\`hangar-access.sh\` beside the repository. This works retroactively; clicking
+Access kit again upgrades older generated scripts without overwriting the
+password. Unrecognized custom scripts or mismatched keys are never
+overwritten.
+
+The script needs only \`restic\` to browse or restore snapshots, or both
+\`restic\` and \`xorriso\` to create an ISO. After mounting your backup drive
+on **any Linux host**, run in the repository directory:
+
+\`\`\`sh
+sudo ./hangar-access.sh snapshots
+sudo ./hangar-access.sh iso latest /absolute/path/backup.iso
+# Or replace latest with a particular restic snapshot ID.
+\`\`\`
+
+That ISO command works **without Hangar and without Cockpit**. It uses the
+local repository and password file directly, never alters existing
+snapshots, and refuses to overwrite an ISO. It needs free space for the
+temporary decrypted files and the ISO.
+
+**Security trade-off:** Putting the key beside an encrypted repository means
+anyone who copies both can decrypt every snapshot. The access kit is always
+optional and only applies to local repositories.
 
 
 **Anywhere for a destination.** Local disk, USB, SFTP, a REST server, Amazon S3,
