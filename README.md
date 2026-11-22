@@ -207,6 +207,16 @@ sudo systemctl try-restart cockpit
 
 Then open Cockpit and choose **Hangar** in the sidebar.
 
+**Self-update:** Settings → Hangar updates checks the latest commit on
+[Whatevser/hangar-plus](https://github.com/Whatevser/hangar-plus)'s `main`
+branch. **Check GitHub** previews whether a newer commit exists; **Install
+update** applies it without replacing `/etc/hangar` or stored repository
+passwords. The **Automatic updates** switch enables a systemd timer
+(`hangar-auto-update.timer`) which checks and installs twice per day,
+including missed runs after boot. It is **off by default** until enabled.
+The updater replaces the installed Cockpit files and helper scripts but does
+not run any recovery or VM operations. Reload Cockpit after a manual update.
+
 To remove it:
 
 ```sh
