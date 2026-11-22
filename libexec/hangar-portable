@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Decrypted data ISO creation and an optional Hangar-independent access kit.
+"""Decrypted data ISO, experimental live ISO, and a Hangar-independent access kit.
 
 Does not perform machine rescue, VM operations or archive imports.
 """
@@ -89,7 +89,7 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 exec restic -r "$here" --password-file "$here/hangar-access.key" "$@"
 """
 
-ACCESS_SCRIPT = r"""#!/bin/sh
+ACCESS_SCRIPT_V2 = r"""#!/bin/sh
 # Hangar standalone access kit v2 — requires restic; ISO also needs xorriso.
 set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
@@ -140,6 +140,25 @@ fi
 exec restic -r "$here" --password-file "$key" "$@"
 """
 
+# v3 keeps all v2 restic and data-ISO actions and adds an independent,
+# opt-in live ISO builder. It requires only files stored in the access kit.
+ACCESS_SCRIPT = ACCESS_SCRIPT_V2.replace(
+    "# Hangar standalone access kit v2 — requires restic; ISO also needs xorriso.",
+    "# Hangar standalone access kit v3 — includes experimental live ISO."
+).replace(
+    'exec restic -r "$here" --password-file "$key" "$@"',
+    '''if [ "$#" -gt 0 ] && [ "$1" = "live-iso" ]; then
+    shift
+    if [ "$#" -ne 2 ]; then
+        echo "Usage: $0 live-iso <latest|snapshot-id> </absolute/output.iso>" >&2
+        exit 2
+    fi
+    exec python3 "$here/hangar-live-iso.py" --repo "$here" --password-file "$key" --snapshot "$1" --output "$2"
+fi
+exec restic -r "$here" --password-file "$key" "$@"'''
+)
+
+
 
 def export_access_kit(repo_id):
     definition, _, _ = repository(repo_id)
@@ -151,6 +170,12 @@ def export_access_kit(repo_id):
     key_file = Path(CONF) / "repos" / (repo_id + ".key")
     key_dest = folder / "hangar-access.key"
     script_dest = folder / "hangar-access.sh"
+    builder_source = Path("/usr/libexec/hangar/hangar-live-iso")
+    builder_dest = folder / "hangar-live-iso.py"
+    if not builder_source.is_file():
+        abort("Experimental live ISO helper is not installed. Update Hangar first.")
+    if builder_dest.exists() and builder_dest.read_bytes() != builder_source.read_bytes():
+        abort("Access kit contains a different live ISO builder; refusing to overwrite it.")
     key_bytes = key_file.read_bytes()
 
     # A password from another repository is NEVER silently replaced.
@@ -158,7 +183,7 @@ def export_access_kit(repo_id):
         abort("Existing access-kit key does not match Hangar's password. Not overwriting.")
     if script_dest.exists():
         saved = script_dest.read_text(encoding="utf-8")
-        if saved not in (ACCESS_SCRIPT, LEGACY_ACCESS_SCRIPT):
+        if saved not in (ACCESS_SCRIPT, ACCESS_SCRIPT_V2, LEGACY_ACCESS_SCRIPT):
             abort("An unrecognized access script already exists. Not overwriting it.")
     else:
         saved = None
@@ -169,6 +194,19 @@ def export_access_kit(repo_id):
         created_key = True
         with os.fdopen(fd, "wb") as fh:
             fh.write(key_bytes)
+
+    # Publish the standalone helper first: the new access script must never
+    # point at a missing builder when an access kit update fails midway.
+    if not builder_dest.exists():
+        fd = os.open(builder_dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o700)
+        try:
+            with os.fdopen(fd, "wb") as out:
+                out.write(builder_source.read_bytes())
+        except BaseException:
+            builder_dest.unlink(missing_ok=True)
+            if created_key:
+                key_dest.unlink(missing_ok=True)
+            raise
 
     if saved != ACCESS_SCRIPT:
         try:
@@ -187,6 +225,7 @@ def export_access_kit(repo_id):
 
     print("Standalone access kit ready in " + str(folder), flush=True)
     print("Run: ./hangar-access.sh iso latest /absolute/path/backup.iso", flush=True)
+    print("Experimental: ./hangar-access.sh live-iso latest /absolute/path/live.iso", flush=True)
     print("WARNING: Anyone with this directory can decrypt the backups.", flush=True)
 
 
@@ -195,10 +234,18 @@ def main(argv):
         abort("Administrator access is required.")
     if len(argv) == 5 and argv[1] == "iso":
         export_iso(argv[2], argv[3], argv[4])
+    elif len(argv) == 5 and argv[1] == "live-iso":
+        definition, args, env = repository(argv[2])
+        _ = definition
+        subprocess.run([
+            sys.executable, "/usr/libexec/hangar/hangar-live-iso",
+            "--repo", args[2], "--password-file", args[4],
+            "--snapshot", argv[3], "--output", argv[4],
+        ], env=env, check=True)
     elif len(argv) == 3 and argv[1] == "access-kit":
         export_access_kit(argv[2])
     else:
-        abort("Usage: hangar-portable iso REPO SNAPSHOT OUTPUT.iso | access-kit REPO")
+        abort("Usage: hangar-portable iso|live-iso REPO SNAPSHOT OUTPUT.iso | access-kit REPO")
 
 
 if __name__ == "__main__":
