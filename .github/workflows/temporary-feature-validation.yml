@@ -1,0 +1,16 @@
+name: Temporary Hangar feature validation
+on:
+  push:
+    branches: [feat/snapshot-import-iso-auto-update]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python3 -m py_compile libexec/hangar-portable libexec/hangar-update libexec/hangar-run
+      - run: node --check js/features/logbook-ui.js && node --check js/features/repos-ui.js && node --check js/features/settings-ui.js
+      - run: npm run test:unit
+      - run: npm run test:smoke
