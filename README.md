@@ -22,6 +22,11 @@ snapshot, not a reconstruction — so it is an ordinary directory tree, and
 restoring a file is copying it. Change badges show what was added, modified or
 removed between adjacent snapshots.
 
+When a snapshot is mounted, **Copy path** copies the current folder's absolute
+path on the Cockpit host. Choose **Allow local access** to remount that repository
+for local accounts. It stays read-only and enforces the saved Unix permissions.
+Access ends when the Logbook unmounts the repository.
+
 **Anywhere for a destination.** Local disk, USB, SFTP, a REST server, Amazon S3,
 Backblaze B2, Azure, Google Cloud Storage, or any
 [rclone](https://rclone.org/overview/) remote — which covers most of the rest.

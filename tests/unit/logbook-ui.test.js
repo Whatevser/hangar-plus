@@ -1540,13 +1540,13 @@ test('a partial restore is a warning naming the unreadable files, never a failur
         assert.equal(c.error, null, 'a partial success must not be an error');
         assert.equal(c.noticeKind, 'warning');
         assert.equal(c.noticeClass(), 'alert alert-warning');
-        assert.match(c.notice, /some files could not be read/i);
+        assert.match(c.notice, /some files could not be restored/i);
         assert.deepEqual(c.unreadable, [
             '/etc/shadow — permission denied',
             '/proc/1/mem — operation not permitted'
         ]);
         assert.equal(c.showUnreadable, true, 'the list is opened, not hidden behind a click');
-        assert.equal(c.unreadableTitle, 'Some files could not be read.');
+        assert.equal(c.unreadableTitle, 'Some files could not be restored.');
         assert.equal(c.busy, false);
     });
 });
@@ -1588,13 +1588,13 @@ test('a failed restore surfaces the remediation and drops the stale success noti
         });
 });
 
-test('a restore result of an unexpected shape does not crash the screen', async () => {
+test('a restore result of an unexpected shape is shown as an unconfirmed restore', async () => {
     for (const result of [null, undefined, {}, 'ok']) {
         await withPatched(Restic, { run: () => Promise.resolve(result) }, async () => {
             const c = attached();
             await c.runRestore(PLAN);
             assert.equal(c.busy, false);
-            assert.equal(c.error, null);
+            assert.match(c.error.message, /did not confirm/);
         });
     }
 });
@@ -1957,4 +1957,51 @@ test('the size is measured with restore-size, not raw-data', () => {
         mode: 'restore-size', snapshotIds: ['ff66'] });
     assert.ok(args.includes('restore-size'));
     assert.ok(args.includes('ff66'), 'the snapshot id never reaches restic');
+});
+
+test('the mounted folder uses the selected snapshot ID and current directory', async () => {
+    const c = attached();
+    c.reader = 'mount';
+    c.mountPoint = '/run/hangar/mnt/nas';
+    c.moment = { shortId: 'a1b2c3d4' };
+    c.cwd = '/home/roman/My Files';
+    assert.equal(c.mountedFolder(), '/run/hangar/mnt/nas/ids/a1b2c3d4/home/roman/My Files');
+    await withPatched(Core, { unmount: async () => {} }, () => c.releaseMount());
+    assert.equal(c.mountedFolder(), '');
+});
+
+test('letting local users browse restarts the mount only after confirmation', async () => {
+    const c = attached();
+    c.reader = 'mount';
+    c.mountPoint = '/run/hangar/mnt/nas';
+    c.moment = { shortId: 'a1b2c3d4' };
+    const commands = [];
+    const mountOptions = [];
+    await withPatched(Core, {
+        isMounted: async () => ({ mounted: false }),
+        mount: async (opts) => { mountOptions.push(opts); },
+        waitForMount: async () => true
+    }, () => withCockpit(async (argv) => { commands.push(argv); }, async () => {
+        await withDialogs({ confirmDialog: async () => false }, () => c.allowLocalMountAccess());
+        assert.deepEqual(commands, []);
+        await withDialogs({ confirmDialog: async () => true }, () => c.allowLocalMountAccess());
+        assert.deepEqual(commands, [['systemctl', 'stop', Core.mountUnitService(c.repoId)]]);
+        assert.equal(mountOptions[0].allowOther, true);
+        assert.equal(c.localMountAccess, true);
+        c.clearIdle();
+    }));
+});
+
+test('restore verifies contents and treats a picked filename as literal', async () => {
+    const c = attached();
+    await withPatched(Restic, { run: async (_, opts) => {
+        assert.deepEqual(opts.include, ['/home/roman/file\\[1\\].txt']);
+        assert.equal(opts.verify, true);
+        return { status: 'ok', summary: { total_files: 1 } };
+    } }, () => c.runRestore({ ...PLAN, include: ['/home/roman/file[1].txt'] }));
+    assert.equal(c.noticeKind, 'success');
+    await withPatched(Restic, {
+        run: async () => ({ status: 'ok', summary: { message_type: 'summary' } })
+    }, () => c.runRestore(PLAN));
+    assert.match(c.error.message, /no matching files/);
 });

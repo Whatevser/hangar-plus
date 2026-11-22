@@ -618,7 +618,13 @@
                 // ex itself for a falsy reason, and a channel that rejected with 0
                 // would then classify as OK — a failure reported as a finished backup.
                 const reason = isPlainObject(ex) ? ex : {};
-                const err = classifyExit(reason.exit_status, reason.message || reason.problem || '');
+                const stderr = reason.message || reason.problem || '';
+                const err = classifyExit(reason.exit_status, stderr);
+                if (op === 'restore') {
+                    const consoleErrors = parseJsonLines(stderr);
+                    err.detail.errors = summarize(messages.concat(consoleErrors)).errors;
+                    if (!err.detail.errors.length && stderr) err.detail.errors = [stderr];
+                }
                 // READ_ERRORS (3) and CANCELLED (130) are outcomes, not failures:
                 // exit 3 still wrote the snapshot. Rejecting would teach users to
                 // ignore the errors that do matter.
@@ -626,6 +632,7 @@
                     const result = summarize(messages);
                     result.status = err.kind === KIND.CANCELLED ? 'cancelled' : 'partial';
                     result.error = err;
+                    if (op === 'restore') result.errors = err.detail.errors;
                     resolve(result);
                     return;
                 }

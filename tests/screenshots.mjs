@@ -89,12 +89,12 @@ const STATE = {
 };
 
 const SNAPSHOTS = [
-    { id: 'aa11', short_id: 'aa11', time: ago(96), hostname: 'db01', paths: ['/home'], tags: ['documents'] },
-    { id: 'bb22', short_id: 'bb22', time: ago(48), hostname: 'db01', paths: ['/home'], tags: ['documents'] },
-    { id: 'cc33', short_id: 'cc33', time: ago(24), hostname: 'db01', paths: ['/home'], tags: ['documents'] },
-    { id: 'dd44', short_id: 'dd44', time: ago(6), hostname: 'db01', paths: ['/home'], tags: ['documents'] },
-    { id: 'ee55', short_id: 'ee55', time: ago(2), hostname: 'db01', paths: ['/home'], tags: ['documents'] },
-    { id: 'ff66', short_id: 'ff66', time: ago(1), hostname: 'db01', paths: ['/home'], tags: ['documents'] }
+    { id: 'aa11aa11', short_id: 'aa11aa11', time: ago(96), hostname: 'db01', paths: ['/home'], tags: ['documents'] },
+    { id: 'bb22bb22', short_id: 'bb22bb22', time: ago(48), hostname: 'db01', paths: ['/home'], tags: ['documents'] },
+    { id: 'cc33cc33', short_id: 'cc33cc33', time: ago(24), hostname: 'db01', paths: ['/home'], tags: ['documents'] },
+    { id: 'dd44dd44', short_id: 'dd44dd44', time: ago(6), hostname: 'db01', paths: ['/home'], tags: ['documents'] },
+    { id: 'ee55ee55', short_id: 'ee55ee55', time: ago(2), hostname: 'db01', paths: ['/home'], tags: ['documents'] },
+    { id: 'ff66ff66', short_id: 'ff66ff66', time: ago(1), hostname: 'db01', paths: ['/home'], tags: ['documents'] }
 ];
 
 // The off-site copy runs daily and keeps a fortnight, so its snapshot count is
@@ -142,7 +142,7 @@ function stub() {
             'ls -1 /etc/hangar/jobs': Object.keys(JOBS).map((i) => i + '.json').join('\n'),
             // More specific first: the stub takes the first key found in the
             // command line, and several of these are substrings of each other.
-            // The mounted snapshot is read from a path containing "/snapshots/",
+            // The mounted snapshot is read from a path under "/ids/",
             // so this has to win before the `restic snapshots` key below.
             'find /run/hangar/mnt': treeListing([
                 ['d', 4096, 26, 'documents'],

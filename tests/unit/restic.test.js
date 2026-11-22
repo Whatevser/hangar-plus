@@ -2096,3 +2096,17 @@ test('the cache flag comes before the operation, where a global flag belongs', (
     const args = R.buildArgs('backup', { repoUrl: '/srv/r', passwordFile: '/k', paths: ['/home'] });
     assert.ok(args.indexOf('--cache-dir') < args.indexOf('backup'));
 });
+
+test('restore preserves destination write errors reported on stderr', async () => {
+    const item = '/home/roman/restore/file';
+    const message = 'permission denied';
+    const output = JSON.stringify({ message_type: 'error', item, error: { message } });
+    await withCockpit(() => rejectingProc({ exit_status: 1, message: output }), async () => {
+        await assert.rejects(R.run('restore', {
+            repoUrl: '/srv/repo', snapshot: 'abc', target: '/home/roman/restore'
+        }), (e) => {
+            assert.deepEqual(e.detail.errors, [{ message_type: 'error', item, error: { message } }]);
+            return true;
+        });
+    });
+});

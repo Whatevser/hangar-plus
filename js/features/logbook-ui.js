@@ -657,6 +657,7 @@
             reader: 'none',            // 'mount' | 'ls' | 'none'
             fallbackReason: '',
             mountPoint: '',
+            localMountAccess: false,
 
             // status
             //
@@ -811,6 +812,7 @@
                 if (this.reader !== 'mount' || !this.repoId) return;
                 this.reader = 'none';
                 this.mountPoint = '';
+                this.localMountAccess = false;
                 return L.unmount(this.repoId).catch(() => null);
             },
 
@@ -1063,7 +1065,7 @@
 
             // --- the file tree ------------------------------------------------
 
-            async ensureMount() {
+            async ensureMount(allowOther = false) {
                 if (this.reader === 'ls') return false;      // already fell back
                 if (!this.repo) return false;
 
@@ -1083,6 +1085,7 @@
                         this.busyLabel = 'Mounting the repository…';
                         await L.mount({
                             repoId: this.repoId,
+                            allowOther,
                             repoUrl: this.repoUrl(),
                             passwordFile: Secrets.keyPath(this.repoId),
                             // buildMountArgv insists on a positive integer, and a
@@ -1113,6 +1116,7 @@
                         return false;
                     }
                     this.reader = 'mount';
+                    if (!state.mounted) this.localMountAccess = allowOther;
                     return true;
                 } catch (e) {
                     this.fallback((e && e.message) || 'the repository could not be mounted');
@@ -1127,6 +1131,54 @@
                 this.reader = 'ls';
                 this.fallbackReason = reason;
                 this.mountPoint = '';
+                this.localMountAccess = false;
+            },
+
+            async allowLocalMountAccess() {
+                const repoId = this.repoId;
+                const confirm = dialogs().confirmDialog;
+                if (typeof confirm !== 'function' || this.busy || !this.mountedFolder()) return;
+                this.beginBusy('Remounting for local access…');
+                try {
+                    const ok = await confirm({
+                        title: 'Allow local access to this repository?',
+                        message: 'Local Linux users can browse the mounted snapshots wherever their saved ownership and permission bits allow access.',
+                        detail: 'This applies to all snapshots in this repository for the lifetime of the mount.',
+                        confirmLabel: 'Allow local access'
+                    });
+                    if (!ok || repoId !== this.repoId || this.reader !== 'mount') return;
+                    await spawnText(['systemctl', 'stop', L.mountUnitService(repoId)]);
+                    this.reader = 'none';
+                    this.mountPoint = '';
+                    this.localMountAccess = false;
+                    if (this.repoId !== repoId) return;
+                    if (await this.ensureMount(true)) this.touchIdle();
+                } catch (e) {
+                    this.handleError(e);
+                } finally {
+                    this.endBusy();
+                }
+            },
+
+            mountedFolder() {
+                if (this.reader !== 'mount' || !this.mountPoint || !this.moment) return '';
+                const id = this.moment.shortId;
+                if (!/^[0-9a-f]{8}$/i.test(id || '')) return '';
+                const base = this.mountPoint + '/ids/' + id;
+                return this.cwd === '/' ? base : base + this.cwd;
+            },
+
+            async copyMountedFolder(input) {
+                input.select();
+                try {
+                    await root.navigator.clipboard.writeText(input.value);
+                    this.noticeKind = 'info';
+                    this.notice = 'Mounted folder path copied.';
+                    this.touchIdle();
+                } catch (_e) {
+                    input.focus();
+                    input.select();
+                }
             },
 
             async loadTree() {
@@ -1150,9 +1202,7 @@
             },
 
             async readMounted() {
-                const base = L.snapshotPath(this.mountPoint, this.moment.snapshot || this.moment);
-                const dir = this.cwd === '/' ? base : base + this.cwd;
-                const text = await spawnText(listDirArgv(dir));
+                const text = await spawnText(listDirArgv(this.mountedFolder()));
                 return parseFindOutput(text, this.cwd);
             },
 
@@ -1244,8 +1294,10 @@
                     const result = await R.run('restore', this.resticOpts({
                         snapshot: plan.snapshot,
                         target: plan.target,
-                        include: plan.include,
-                        verify: plan.verify
+                        // The picker supplies literal filenames. restic --include
+                        // interprets backslashes and shell-style pattern characters.
+                        include: plan.include.map((path) => path.replace(/[\\*?\[\]]/g, '\\$&')),
+                        verify: true
                     }), (p) => { this.progress = p; });
 
                     // Exit 3 wrote the files it could read. That is a partial
@@ -1254,21 +1306,30 @@
                     const status = result && result.status;
                     if (status === 'partial') {
                         this.unreadable = unreadableFromMessages(result.errors);
-                        this.unreadableTitle = 'Some files could not be read.';
+                        this.unreadableTitle = 'Some files could not be restored.';
                         this.showUnreadable = true;
                         this.noticeKind = 'warning';
                         this.notice = 'Restored to ' + plan.target +
-                            ', but some files could not be read.';
+                            ', but some files could not be restored.';
                     } else if (status === 'cancelled') {
                         // Cancelling is a decision, not a failure.
                         this.noticeKind = 'info';
                         this.notice = 'The restore was cancelled.';
-                    } else {
+                    } else if (status === 'ok' && result.summary &&
+                        !result.summary.total_files && !result.summary.files_restored &&
+                        !result.summary.files_skipped) {
+                        throw fail('Restic found no matching files or folders to restore.');
+                    } else if (status === 'ok') {
                         this.noticeKind = 'success';
                         this.notice = 'Restored to ' + plan.target + '.';
+                    } else {
+                        throw fail('Restic did not confirm that the restore completed.');
                     }
                 } catch (e) {
                     this.handleError(e);
+                    this.unreadable = unreadableFromError(e);
+                    this.unreadableTitle = 'Restore errors';
+                    this.showUnreadable = this.unreadable.length > 0;
                 } finally {
                     this.endBusy();
                     this.progress = null;
@@ -1633,6 +1694,18 @@
 '            x-text="momentSizeLabel()"></span>' +
 '    </div>' +
 '    </template>' +
+
+'    <div x-show="mountedFolder() && !busy" class="px-2 pb-2">' +
+'      <label for="hangar-mounted-folder" class="small text-secondary">Mounted folder on this host</label>' +
+'      <div class="input-group input-group-sm">' +
+'        <input id="hangar-mounted-folder" type="text" class="form-control hangar-mono"' +
+'               readonly :value="mountedFolder()" x-ref="mountedFolder">' +
+'        <button type="button" class="btn btn-outline-secondary"' +
+'                @click="copyMountedFolder($refs.mountedFolder)">Copy path</button>' +
+'        <button type="button" class="btn btn-outline-secondary" x-show="!localMountAccess"' +
+'                @click="allowLocalMountAccess()">Allow local access</button>' +
+'      </div>' +
+'    </div>' +
 
 '    <div x-show="busy" class="p-2 small text-secondary" role="status" aria-live="polite">' +
 '      <span x-text="busyLabel"></span>' +

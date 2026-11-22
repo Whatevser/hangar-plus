@@ -908,16 +908,16 @@ async function main() {
         {
             const REPO = { id: 'attic', kind: 'local', name: 'Attic', path: '/srv/backups/attic' };
             const SNAPS = [
-                { id: 'aa11', short_id: 'aa11', time: new Date(Date.now() - 7200e3).toISOString(),
+                { id: 'aa11aa11', short_id: 'aa11aa11', time: new Date(Date.now() - 7200e3).toISOString(),
                     hostname: 'db01', paths: ['/home'] },
-                { id: 'bb22', short_id: 'bb22', time: new Date(Date.now() - 3600e3).toISOString(),
+                { id: 'bb22bb22', short_id: 'bb22bb22', time: new Date(Date.now() - 3600e3).toISOString(),
                     hostname: 'db01', paths: ['/home'] }
             ];
             const { ctx, page } = await open(browser, {
                 spawn: Object.assign({}, DEFAULT_STUB.spawn, {
                     'ls -1 /etc/hangar/repos': 'attic.json',
                     // Ahead of 'snapshots': the mounted tree is read from a path
-                    // that contains /snapshots/, and the stub matches substrings.
+                    // under /ids/, and the stub matches substrings.
                     'find /run/hangar/mnt': 'f\t2048\t1700000000\tnotes.md\n',
                     // The folder picker's own listing: "%y\t%f" per record,
                     // separated by RS (\u001e) — what listArgv asks find for.
