@@ -1319,6 +1319,22 @@
             },
 
             // --- portable snapshot archives and data ISO --------------------
+            exportSnapshot() {
+                if (!this.moment || this.busy) return;
+                this.clearStatus();
+                try {
+                    const row = { name: 'snapshot-' + this.moment.id.slice(0, 12),
+                        isDir: true, path: '/' };
+                    const link = root.document.createElement('a');
+                    link.href = downloadUrl(cockpit.transport, this.repoId, this.moment.id, row);
+                    link.download = downloadName(row);
+                    root.document.body.appendChild(link);
+                    link.click();
+                    link.remove();
+                } catch (e) {
+                    this.handleError(e);
+                }
+            },
             async importSnapshot() {
                 if (!this.repoId || this.busy || typeof root.prompt !== 'function') return;
                 const name = root.prompt('Absolute path on this Cockpit host to an exported snapshot .zip or .iso:', '/mnt/backup/snapshot.zip');
@@ -1780,6 +1796,9 @@
 '      <button type="button" class="btn btn-sm btn-outline-secondary"' +
 '              title="Select one file or folder. Folders download as ZIP archives."' +
 '              :disabled="!canDownload() || busy" @click="download()">Download</button>' +
+'      <button type="button" class="btn btn-sm btn-outline-secondary"' +
+'              title="Download the entire decrypted snapshot as one ZIP file."' +
+'              :disabled="!moment || busy" @click="exportSnapshot()">Export ZIP</button>' +
 '      <button type="button" class="btn btn-sm btn-outline-secondary"' +
 '              title="Import a ZIP or ISO from a path on this host into this repository as a new snapshot."' +
 '              :disabled="!repoId || busy" @click="importSnapshot()">Import snapshot…</button>' +
