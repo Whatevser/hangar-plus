@@ -20,10 +20,7 @@
     --bs-link-color: #0066cc;
     --bs-link-hover-color: #004b95;
 
-    /* Derived from Bootstrap's semantic colours rather than hardcoded, so every
-     * palette in themes.css restyles the status dots, badges and scrubber for free.
-     * A new theme states its Bootstrap variables and nothing here has to change.
-     * The literals are fallbacks for the case where Bootstrap has not loaded. */
+    /* Shared semantic status colours, with Bootstrap-independent fallbacks. */
     --hangar-ok: var(--bs-success, #2e7d32);
     --hangar-warn: var(--bs-warning, #ed6c02);
     --hangar-err: var(--bs-danger, #c62828);
@@ -55,7 +52,7 @@ html {
 }
 
 /* x-cloak must be defined in CSS; the attribute alone does not hide anything.
-   The document-level gate in index.html remains until async theme loading ends. */
+   The document-level gate in index.html remains until Alpine has loaded. */
 [x-cloak] { display: none !important; }
 
 body {
@@ -166,8 +163,7 @@ body {
  * instead of a word: nothing jumps when the data lands, and the screen says how
  * much is on its way rather than merely that something is.
  *
- * Built from Bootstrap's own theme tokens, so it follows every hangar theme
- * without naming a single colour of its own.
+ * Built from Bootstrap's semantic colours in Cockpit light and dark modes.
  */
 .hangar-skel-card {
     border: 1px solid var(--bs-border-color, rgba(128, 128, 128, 0.25));
@@ -298,8 +294,7 @@ body {
     margin-left: 0.35rem;
 }
 
-/* Bootstrap 5.3's *-bg-subtle variables are themed, so these tint with the
- * palette instead of staying a fixed rgba() that only suits the light theme. */
+/* Bootstrap 5.3's subtle colours follow the current Cockpit light/dark mode. */
 .hangar-badge.added    { background: var(--bs-success-bg-subtle, rgba(46, 125, 50, 0.18)); color: var(--hangar-ok); }
 .hangar-badge.modified { background: var(--bs-warning-bg-subtle, rgba(237, 108, 2, 0.18)); color: var(--hangar-warn); }
 .hangar-badge.removed  { background: var(--bs-danger-bg-subtle, rgba(198, 40, 40, 0.18));  color: var(--hangar-err); }
@@ -328,8 +323,7 @@ body {
     min-height: 0;
 }
 
-/* Scrollbars are easy to miss on the dark palettes, which makes a scrollable
- * dialog look truncated. Give them contrast against whichever theme is active. */
+/* Keep scrollbars visible against both Cockpit surfaces. */
 .modal-body,
 .hangar-body,
 .hangar-tree,
@@ -369,12 +363,7 @@ body {
     height: 0.45rem;
 }
 
-/* Bootstrap paints every heading with --bs-heading-color, and each hangar theme
- * sets that to a near-white for the dark page background. An alert has a light
- * tinted background in every theme, so a heading inside one came out all but
- * invisible — the Recovery screen's "How this works, and what it costs" was
- * legible only by selecting it. Alerts already set their own foreground; the
- * heading should simply take it. */
+/* Alert headings must inherit the alert foreground in either appearance. */
 .alert h1, .alert h2, .alert h3, .alert h4, .alert h5, .alert h6,
 .alert .h1, .alert .h2, .alert .h3, .alert .h4, .alert .h5, .alert .h6,
 .alert legend {
