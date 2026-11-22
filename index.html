@@ -53,18 +53,6 @@
         <span x-show="ready && missing.length" class="badge text-bg-warning"
               x-text="missing.length + ' tool(s) missing'"></span>
 
-        <!-- One control with two jobs, like explorer's: it checks for an update when
-             there is nothing to install, and opens the installer when there is. A
-             separate "check" button would sit unused almost always.
-             A real <button>, not a clickable <span>, so it is keyboard-reachable. -->
-        <button type="button"
-                :class="badgeClass()"
-                x-show="installedVersion || update.checking || update.error"
-                :disabled="update.checking"
-                @click="onBadgeClick(settings)"
-                :title="badgeTitle()"
-                :aria-label="badgeTitle()"
-                x-text="updateBadgeLabel()"></button>
     </div>
 
     <!-- Body ------------------------------------------------------------ -->
@@ -106,7 +94,6 @@
         <div x-show="tab === 'repos'"      id="hangar-repos"></div>
         <div x-show="tab === 'jobs'"       id="hangar-jobs"></div>
         <div x-show="tab === 'logbook'"    id="hangar-logbook"></div>
-        <div x-show="tab === 'recovery'"   id="hangar-recovery"></div>
         <div x-show="tab === 'settings'"   id="hangar-settings"></div>
 
     </div>
@@ -130,20 +117,17 @@
 <!-- v2 source kinds. These call HangarSources.registerKind() at load, so they must
      come after sources.js and before anything that enumerates the kinds. -->
 <script src="js/core/sources-container.js"></script>
-<script src="js/core/sources-libvirt.js"></script>
 <script src="js/core/retention.js"></script>
 <!-- The size cap. After retention.js: it is the same thinning decision expressed
      as bytes rather than as counts and durations. -->
 <script src="js/core/sizeguard.js"></script>
 <script src="js/core/schedule.js"></script>
 <script src="js/core/provision.js"></script>
-<script src="js/core/dr.js"></script>
 <script src="js/core/logbook.js"></script>
 <script src="js/core/fspicker.js"></script>
 <script src="js/core/themes.js"></script>
 <script src="js/core/wordlist.js"></script>
 <script src="js/core/passgen.js"></script>
-<script src="js/core/semver.js"></script>
 <script src="js/core/config.js"></script>
 <!-- AFTER config.js: reposize.js reads and writes under the state directory, and
      it is core/config.js that owns that path. -->
@@ -161,10 +145,8 @@
 <script src="js/features/rclone-ui.js"></script>
 <script src="js/features/jobs-ui.js"></script>
 <script src="js/features/logbook-ui.js"></script>
-<script src="js/features/recovery-ui.js"></script>
 <script src="js/features/provision-ui.js"></script>
 <script src="js/features/settings-ui.js"></script>
-<script src="js/features/update.js"></script>
 
 <script src="js/app.js"></script>
 

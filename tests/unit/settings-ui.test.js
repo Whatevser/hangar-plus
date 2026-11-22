@@ -283,23 +283,19 @@ test('validateSettings reports every field, in field order', () => {
         mountRoot: 'relative/path',
         mountIdleTimeoutSec: -5,
         notifyOnFailure: 'yes',
-        updateRepo: 'not a repo',
-        updateCheckOnStartup: 'sometimes',
         repoSizeMaxAgeHours: 'often'
     });
-    assert.equal(problems.length, 6);
+    assert.equal(problems.length, 4);
     assert.match(problems[0], /Mount folder/);
     assert.match(problems[1], /Idle timeout/);
     assert.match(problems[2], /Notify on failure/);
-    assert.match(problems[3], /Update repository/);
-    assert.match(problems[4], /Check for updates/);
-    assert.match(problems[5], /Size refresh/);
+    assert.match(problems[3], /Size refresh/);
 });
 
 test('validateSettings on an empty or missing form still answers', () => {
-    assert.equal(UI.validateSettings(null).length, 5);
-    assert.equal(UI.validateSettings(undefined).length, 5);
-    assert.equal(UI.validateSettings('nonsense').length, 5);
+    assert.equal(UI.validateSettings(null).length, 4);
+    assert.equal(UI.validateSettings(undefined).length, 4);
+    assert.equal(UI.validateSettings('nonsense').length, 4);
 });
 
 test('fieldProblems keys the problems by field', () => {
@@ -317,8 +313,6 @@ test('formFromSettings fills defaults and drops unknown keys', () => {
         mountRoot: '/x',
         mountIdleTimeoutSec: DEFAULTS.mountIdleTimeoutSec,
         notifyOnFailure: DEFAULTS.notifyOnFailure,
-        updateRepo: DEFAULTS.updateRepo,
-        updateCheckOnStartup: DEFAULTS.updateCheckOnStartup,
         repoSizeMaxAgeHours: DEFAULTS.repoSizeMaxAgeHours
     });
     assert.equal(form.nonsense, undefined);
@@ -329,8 +323,6 @@ test('formFromSettings on null is the shipped defaults', () => {
         mountRoot: DEFAULTS.mountRoot,
         mountIdleTimeoutSec: DEFAULTS.mountIdleTimeoutSec,
         notifyOnFailure: DEFAULTS.notifyOnFailure,
-        updateRepo: DEFAULTS.updateRepo,
-        updateCheckOnStartup: DEFAULTS.updateCheckOnStartup,
         repoSizeMaxAgeHours: DEFAULTS.repoSizeMaxAgeHours
     });
 });
@@ -340,11 +332,8 @@ test('settingsFromForm trims and coerces exactly once', () => {
         mountRoot: '  /srv/mnt  ',
         mountIdleTimeoutSec: '1200',
         notifyOnFailure: 1,
-        updateRepo: '  appuser/hangar  ',
-        updateCheckOnStartup: 1,
         repoSizeMaxAgeHours: '12'
     }), { mountRoot: '/srv/mnt', mountIdleTimeoutSec: 1200, notifyOnFailure: true,
-          updateRepo: 'appuser/hangar', updateCheckOnStartup: true,
           repoSizeMaxAgeHours: 12 });
 });
 
@@ -355,7 +344,7 @@ test('settingsFromForm keeps an unparseable timeout as null rather than zero', (
 
 test('a form round-trips through settings unchanged', () => {
     const settings = { mountRoot: '/srv/mnt', mountIdleTimeoutSec: 120, notifyOnFailure: false,
-        updateRepo: 'appuser/hangar', updateCheckOnStartup: true, repoSizeMaxAgeHours: 6 };
+        repoSizeMaxAgeHours: 6 };
     const back = UI.settingsFromForm(UI.formFromSettings(settings));
     assert.deepEqual(back, settings);
     assert.equal(UI.isDirty(UI.formFromSettings(settings), settings), false);
@@ -714,7 +703,6 @@ test('save() writes the coerced settings and clears the dirty state', async () =
     assert.equal(await c.save(), true);
     assert.deepEqual(deps.written, [
         { mountRoot: '/srv/mnt', mountIdleTimeoutSec: 1800, notifyOnFailure: false,
-          updateRepo: DEFAULTS.updateRepo, updateCheckOnStartup: DEFAULTS.updateCheckOnStartup,
           repoSizeMaxAgeHours: DEFAULTS.repoSizeMaxAgeHours }
     ]);
     assert.equal(c.dirty(), false);
@@ -1046,47 +1034,6 @@ test('pad handles the widths a caller can get wrong', () => {
 });
 
 // -------------------------------------------------------- update repository
-
-test('an update repository is accepted in every form update.js accepts', () => {
-    ['owner/name', 'appuser/hangar', 'https://github.com/appuser/hangar',
-        'https://github.com/appuser/hangar.git', 'http://www.github.com/a/b',
-        'a.b-c_d/e.f-g_h'].forEach((v) => {
-        assert.deepEqual(UI.updateRepoProblems(v), [], v);
-    });
-    assert.deepEqual(UI.updateRepoProblems(''), []);
-    assert.deepEqual(UI.updateRepoProblems('   '), []);
-    assert.deepEqual(UI.updateRepoProblems(null), []);
-});
-
-test('an update repository hangar could never check is rejected, not saved', () => {
-    ['owner', 'owner/name/extra', '/name', 'owner/', 'owner name',
-        'https://gitlab.com/a/b', 'owner/name;rm -rf /', 'a/b\nc/d',
-        '../../etc/passwd', 'x'.repeat(300) + '/y'].forEach((v) => {
-        const problems = UI.updateRepoProblems(v);
-        assert.equal(problems.length, 1, JSON.stringify(v) + ' should be rejected');
-        assert.match(problems[0], /"owner\/name"/);
-    });
-});
-
-test('the built-in repository check agrees with update.js, so it is safe as a fallback', () => {
-    // In the browser index.html loads update.js AFTER this screen, so the field
-    // must still validate before HangarUpdate exists. Silently accepting anything
-    // would save a repository that is never checked and never says why.
-    const Update = require('../../js/features/update.js');
-    ['owner/name', 'https://github.com/a/b.git', 'owner', 'a/b/c', '', 'a b/c',
-        'https://gitlab.com/a/b', '/a/b/'].forEach((v) => {
-        assert.equal(UI.looksLikeRepo(v), !!Update.releasesApiUrl(v),
-            'disagreement on ' + JSON.stringify(v));
-    });
-});
-
-test('checkOnStartup, like every other switch, must be a real boolean', () => {
-    assert.deepEqual(UI.checkOnStartupProblems(true), []);
-    assert.deepEqual(UI.checkOnStartupProblems(false), []);
-    ['true', 1, 0, null, undefined, {}].forEach((v) => {
-        assert.equal(UI.checkOnStartupProblems(v).length, 1, String(v));
-    });
-});
 
 // ------------------------------------------ READ_ERRORS is a partial success
 
@@ -1472,7 +1419,7 @@ test('every button has a type and a name a screen reader can announce', () => {
 
 test('every input the screen owns is bound to a label', () => {
     const inputs = [...UI.TEMPLATE.matchAll(/<input\b([^>]*)>/g)].map((m) => m[1]);
-    assert.ok(inputs.length >= 5, 'expected every setting to have an input');
+    assert.ok(inputs.length >= 4, 'expected every setting to have an input');
     inputs.forEach((attrs) => {
         const id = /id="([^"]+)"/.exec(attrs);
         assert.ok(id, 'an input has no id, so no label can point at it: ' + attrs);

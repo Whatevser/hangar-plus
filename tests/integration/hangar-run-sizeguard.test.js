@@ -1203,3 +1203,20 @@ test('the file hangar-run writes is the file js/core/reposize.js reads', () => {
             assert.equal(RepoSize.isStale(raw, raw.at + 1000), false, 'and call it fresh');
         });
 });
+
+test('disabled retention protects existing snapshots even from a second job and a size limit', () => {
+    const disabled = { disabled: true };
+    for (const shared of [false, true]) {
+        const job = { ...JOB, retention: shared ? { last: 1 } : disabled };
+        withHost(repoWithGuard({ limit: '1 GB' }), job, { raw: 100 * GB, snapshots: SNAPS }, (host) => {
+            if (shared) {
+                fs.writeFileSync(path.join(host.dir, 'jobs', 'manual.json'),
+                    JSON.stringify({ ...JOB, id: 'manual', retention: disabled }));
+            }
+            const r = host.run();
+            assert.equal(r.status, 0, r.stderr);
+            assert.deepEqual(subcommandsOf(host.calls()), ['backup']);
+            assert.deepEqual(host.repo().snapshots.slice(0, -1), SNAPS);
+        });
+    }
+});

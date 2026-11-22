@@ -85,17 +85,6 @@ test('rclone is explained as extra destinations', () => {
     assert.match(UI.reasonFor('rclone'), /off-site|remote/i);
 });
 
-test('rear is explained as rescue images', () => {
-    assert.match(UI.reasonFor('rear'), /rescue image/i);
-});
-
-test('libvirt is explained as the recovery drill', () => {
-    // Not yet planned by core, but the sentence exists so the drill can ship
-    // without inventing copy at the last minute.
-    assert.match(UI.reasonFor('libvirt'), /drill/i);
-    assert.match(UI.reasonFor('libvirt'), /virtual machine/i);
-});
-
 test('reasonFor falls back to the core requirement note', () => {
     // Every tool core plans has a reason one way or the other.
     for (const t of P.TOOLS) assert.notEqual(UI.reasonFor(t), '');
@@ -161,13 +150,12 @@ test('stepRows renders the real RHEL restic plan', () => {
 });
 
 test('stepRows marks the optional tools optional', () => {
-    const rows = UI.stepRows(P.planFor(['restic', 'rclone', 'fuse3', 'rear'], 'debian'));
+    const rows = UI.stepRows(P.planFor(['restic', 'rclone', 'fuse3'], 'debian'));
     const byTool = {};
     rows.forEach((r) => { byTool[r.tool] = r; });
     assert.equal(byTool.restic.required, true);
     assert.equal(byTool.rclone.required, false);
     assert.equal(byTool.fuse3.required, false);
-    assert.equal(byTool.rear.required, false);
     assert.equal(byTool.rclone.need, 'Optional');
 });
 
@@ -181,12 +169,12 @@ test('every row on a full plan carries a reason and an action sentence', () => {
 });
 
 test('stepRows keeps core install order — restic first', () => {
-    const rows = UI.stepRows(P.planFor(['rear', 'fuse3', 'restic'], 'suse'));
-    assert.deepEqual(rows.map((r) => r.tool), ['restic', 'fuse3', 'rear']);
+    const rows = UI.stepRows(P.planFor(['fuse3', 'restic'], 'suse'));
+    assert.deepEqual(rows.map((r) => r.tool), ['restic', 'fuse3']);
 });
 
-test('rear on Arch is surfaced as unavailable, not as a download', () => {
-    const rows = UI.stepRows(P.planFor(['rear'], 'arch'));
+test('fuse3 on an unknown distribution is surfaced as unavailable, not as a download', () => {
+    const rows = UI.stepRows(P.planFor(['fuse3'], 'unknown'));
     assert.equal(rows[0].unavailable, true);
     assert.equal(rows[0].download, false);
     assert.match(rows[0].action, /install it manually/i);
@@ -235,8 +223,8 @@ test('needsConsent is false where the distribution packages everything', () => {
 });
 
 test('needsConsent is false when the only gap is an unpackaged tool with no release', () => {
-    // rear on Arch: nothing to install and nothing to download either.
-    assert.equal(UI.needsConsent(P.planFor(['rear'], 'arch')), false);
+    // fuse3 on an unknown distribution: nothing to install and nothing to download either.
+    assert.equal(UI.needsConsent(P.planFor(['fuse3'], 'unknown')), false);
 });
 
 test('needsConsent works on rows as well as on plans', () => {
@@ -515,7 +503,7 @@ test('an unavailable tool is skipped with the manual instruction, not attempted'
         installStep: () => { called = true; return Promise.resolve([]); }
     }, async () => {
         const c = component();
-        c.rows = UI.stepRows(P.planFor(['rear'], 'arch'));
+        c.rows = UI.stepRows(P.planFor(['fuse3'], 'unknown'));
         await c.installAll();
         assert.equal(called, false);
         assert.equal(c.rows[0].state, 'skipped');
@@ -971,7 +959,7 @@ test('a family detection that rejects is surfaced, not swallowed', async () => {
 test('an unexpected throw inside the run is surfaced instead of vanishing', async () => {
     // An unhandled rejection inside an Alpine @click leaves the user with a dead
     // button and no explanation, so the loop has to own its own surprises.
-    const rows = UI.stepRows(P.planFor(['rear'], 'arch'));
+    const rows = UI.stepRows(P.planFor(['fuse3'], 'unknown'));
     await withProvision({
         describeStep: () => { throw new TypeError('describeStep is not a function'); }
     }, async () => {

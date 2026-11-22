@@ -53,6 +53,7 @@
     const DURATION_RE = /^(?:(\d+)y)?(?:(\d+)m)?(?:(\d+)d)?(?:(\d+)h)?$/;
 
     const PRESETS = {
+        disable: Object.freeze({ disabled: true }),
         // Just enough to survive a bad week without paying for a year of history.
         minimal: Object.freeze({ last: 1, daily: 7, weekly: 4 }),
         // The default. A year of coverage that thins smoothly as it ages, which
@@ -132,7 +133,7 @@
     }
 
     function normalize(policy) {
-        return split(policy).norm;
+        return policy && policy.disabled === true ? { disabled: true } : split(policy).norm;
     }
 
     function parseDuration(text) {
@@ -189,6 +190,7 @@
     }
 
     function toArgs(policy) {
+        if (policy && policy.disabled === true) return [];
         const p = normalize(policy);
         const args = [];
 
@@ -213,6 +215,7 @@
     }
 
     function validate(policy) {
+        if (policy && policy.disabled === true) return [];
         if (!isPlainObject(policy)) {
             return [problem('not-object', 'Retention policy must be an object.', { value: policy })];
         }
@@ -307,6 +310,7 @@
     }
 
     function describe(policy) {
+        if (policy && policy.disabled === true) return "Keep all snapshots. Hangar skips automatic retention and size-limit pruning for jobs using this repository on this host.";
         const p = normalize(policy);
         const phrases = [];
         const values = [];

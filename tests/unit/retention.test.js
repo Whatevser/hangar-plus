@@ -847,6 +847,7 @@ test('toArgs output is always well formed argv', () => {
             assert.equal(typeof a, 'string', where);
             assert.notEqual(a, '', where);
         });
+        if (policy && policy.disabled === true) return assert.deepEqual(args, []);
         assert.deepEqual(args.slice(-2), ['--group-by', 'host,paths'], where);
         // Flags in even positions, their values in odd ones.
         args.slice(0, -2).forEach((a, i) => {
@@ -859,7 +860,7 @@ test('toArgs output is always well formed argv', () => {
 
 test('a clean validate() always implies at least one keep flag — the data-loss guard', () => {
     CORPUS.forEach((policy) => {
-        if (R.validate(policy).length > 0) return;
+        if (R.validate(policy).length > 0 || policy.disabled === true) return;
         assert.ok(R.toArgs(policy).some((a) => a.indexOf('--keep-') === 0),
             'validate() passed a policy that keeps nothing: ' + label(policy));
     });

@@ -19,7 +19,7 @@ test('module loads with no DOM present', () => {
 
 test('tabs cover every screen the plugin ships', () => {
     const ids = App.TABS.map((t) => t.id);
-    assert.deepEqual(ids, ['overview', 'repos', 'jobs', 'logbook', 'recovery', 'settings']);
+    assert.deepEqual(ids, ['overview', 'repos', 'jobs', 'logbook', 'settings']);
     for (const t of App.TABS) {
         assert.ok(t.label && typeof t.label === 'string', `${t.id} has no label`);
     }

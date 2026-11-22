@@ -75,8 +75,6 @@ const DEFAULT_STUB = {
         'restic version': 'restic 0.19.1 compiled with go1.26.4 on linux/amd64',
         'rclone --version': 'rclone v1.74.3',
         'fusermount3 --version': 'fusermount3 version: 3.16.2',
-        'rear --version': 'Relax-and-Recover 2.9',
-        'virt-install --version': '4.1.0',
         'unzip -v': 'UnZip 6.00 of 20 April 2009',
         'curl --version': 'curl 8.9.1 (x86_64-redhat-linux-gnu)',
         'ls -1 /etc/hangar/repos': '',
@@ -140,8 +138,8 @@ async function main() {
                 const missing = await page.evaluate(() => {
                     const need = ['HangarErrors', 'HangarConfig', 'HangarRestic', 'HangarRepos',
                         'HangarSecrets', 'HangarSources', 'HangarRetention', 'HangarSchedule',
-                        'HangarProvision', 'HangarDr', 'HangarLogbook', 'HangarSemver',
-                        'HangarUpdate', 'hangarApp'];
+                        'HangarProvision', 'HangarLogbook',
+                        'hangarApp'];
                     return need.filter((n) => typeof window[n] === 'undefined');
                 });
                 assertEqual(missing.length, 0, `missing globals: ${missing.join(', ')}`);
@@ -155,11 +153,11 @@ async function main() {
                 assert(!cloaked, 'x-cloak still present — Alpine did not initialise');
             });
 
-            await check('all six tabs render', async () => {
+            await check('the five backup tabs render', async () => {
                 const labels = await page.$$eval('.nav-pills .nav-link', (els) =>
                     els.map((e) => e.textContent.trim()));
-                assert.length;
-                for (const want of ['Overview', 'Repositories', 'Jobs', 'Logbook', 'Recovery', 'Settings']) {
+                assertEqual(labels.length, 5, 'unexpected tab count');
+                for (const want of ['Overview', 'Repositories', 'Jobs', 'Logbook', 'Settings']) {
                     assert(labels.includes(want), `tab missing: ${want} (got ${labels.join(', ')})`);
                 }
             });
@@ -170,14 +168,14 @@ async function main() {
             });
 
             await check('every modal partial was injected', async () => {
-                const ids = ['hangar-confirm', 'hangar-password', 'hangar-update',
+                const ids = ['hangar-confirm', 'hangar-password',
                     'hangar-repo-edit', 'hangar-rclone-remote', 'hangar-job-edit', 'hangar-restore',
-                    'hangar-provision', 'hangar-recovery'];
+                    'hangar-provision'];
                 const found = await page.evaluate((wanted) =>
                     wanted.filter((id) => !!document.getElementById(id)), ids);
                 // A partial that failed to load logs to console and silently disables
                 // its feature, so assert on presence rather than trusting boot.js.
-                assert(found.length >= 3, `too few modals injected: ${found.join(', ')}`);
+                assert(found.length === ids.length, `too few modals injected: ${found.join(', ')}`);
             });
 
             // Alpine settles asynchronously and x-show toggles after the first paint,
@@ -197,7 +195,7 @@ async function main() {
                 // reads as a rendering bug. Checked across every screen, because it
                 // is a whole class of defect rather than one place.
                 const empty = [];
-                for (const tab of ['Overview', 'Repositories', 'Jobs', 'Logbook', 'Recovery', 'Settings']) {
+                for (const tab of ['Overview', 'Repositories', 'Jobs', 'Logbook', 'Settings']) {
                     await page.click(`.nav-pills .nav-link:text-is("${tab}")`);
                     await settle();
                     for (const a of await page.$$('.alert')) {
@@ -273,7 +271,7 @@ async function main() {
 
             await check('switching tabs changes the visible panel', async () => {
                 for (const [label, id] of [['Logbook', 'hangar-logbook'], ['Settings', 'hangar-settings'],
-                    ['Recovery', 'hangar-recovery'], ['Overview', 'hangar-overview']]) {
+                    ['Overview', 'hangar-overview']]) {
                     await page.click(`.nav-pills .nav-link:text-is("${label}")`);
                     await page.waitForTimeout(120);
                     assert(await page.isVisible(`#${id}`), `${label} panel not visible`);
@@ -289,7 +287,6 @@ async function main() {
             const { ctx, page } = await open(browser, {
                 spawn: Object.assign({}, DEFAULT_STUB.spawn, {
                     'restic version': { error: true, message: 'not found', exit_status: 127 },
-                    'rear -V': { error: true, message: 'not found', exit_status: 127 }
                 })
             });
 
@@ -338,7 +335,6 @@ async function main() {
                 await page.evaluate(() => {
                     window.__hangarStub.spawn['restic version'] =
                         'restic 0.19.1 compiled with go1.26.4 on linux/amd64';
-                    window.__hangarStub.spawn['rear --version'] = 'Relax-and-Recover 2.9';
                     window.dispatchEvent(new CustomEvent('hangar:provisioned'));
                 });
                 await page.waitForTimeout(700);
@@ -353,67 +349,6 @@ async function main() {
             await ctx.close();
         }
 
-        // ---- self-update badge
-        {
-            // The trailing status line is what `curl -w '%{http_code}'` appends,
-            // and hangar reads it to tell "no releases yet" (404) from a real
-            // failure. A stub that omits it is not standing in for curl.
-            const release = JSON.stringify({
-                tag_name: 'v9.9.9', body: 'notes', prerelease: false,
-                assets: [{ name: 'hangar-9.9.9.zip', browser_download_url: 'https://github.com/o/r/releases/download/v9.9.9/hangar-9.9.9.zip' }]
-            }) + '\n200';
-            const { ctx, page } = await open(browser, {
-                spawn: Object.assign({}, DEFAULT_STUB.spawn, { 'api.github.com': release }),
-                files: Object.assign({}, DEFAULT_STUB.files, {
-                    '/etc/hangar/config.json': JSON.stringify({ updateRepo: 'appuser/hangar', updateCheckOnStartup: true })
-                })
-            });
-
-            await check('an available update surfaces as a button in the header', async () => {
-                await page.waitForSelector('button:has-text("Update to 9.9.9")', { timeout: 5000 });
-            });
-
-            await check('the update check goes through curl, never browser fetch', async () => {
-                // CSP connect-src 'self' blocks fetch() to github.com, so this is the
-                // difference between a working updater and a silently broken one.
-                const calls = await page.evaluate(() => window.__hangarStub.calls
-                    .filter((c) => c.kind === 'spawn')
-                    .map((c) => c.argv.join(' ')));
-                const gh = calls.filter((c) => /api\.github\.com/.test(c));
-                assert(gh.length > 0, 'no spawn reached api.github.com');
-                assert(gh.every((c) => /^curl /.test(c)), `not curl: ${gh.join(' | ')}`);
-            });
-
-            await check('clicking the badge opens the update modal on its confirm step', async () => {
-                await page.click('button:has-text("Update to 9.9.9")');
-                await page.waitForSelector('#hangar-update.show', { timeout: 5000 });
-                const text = await page.textContent('#hangar-update');
-                assert(/9\.9\.9/.test(text), 'modal does not name the version');
-                assert(/stays in place/i.test(text), 'modal omits the failure reassurance');
-            });
-
-            if (process.env.SHOT) await page.screenshot({ path: 'tests/e2e-update.png', fullPage: true });
-            await ctx.close();
-        }
-
-        // ---- current version shown when up to date
-        {
-            const release = JSON.stringify({ tag_name: 'v0.0.1', assets: [] }) + '\n200';
-            const { ctx, page } = await open(browser, {
-                spawn: Object.assign({}, DEFAULT_STUB.spawn, { 'api.github.com': release }),
-                files: Object.assign({}, DEFAULT_STUB.files, {
-                    '/etc/hangar/config.json': JSON.stringify({ updateRepo: 'appuser/hangar', updateCheckOnStartup: true })
-                })
-            });
-
-            await check('an older release is never offered as an update', async () => {
-                await page.waitForTimeout(600);
-                assertEqual(await page.isVisible('button:has-text("Update to")'), false,
-                    'an older release was offered as an upgrade');
-            });
-
-            await ctx.close();
-        }
 
 
         // ---- modal sizing, in its own context
@@ -949,7 +884,7 @@ async function main() {
 
             await check('no screen shows a dropdown with nothing to choose', async () => {
                 // The rule, checked across every tab rather than one dialog.
-                for (const tab of ['Overview', 'Repositories', 'Jobs', 'Logbook', 'Recovery', 'Settings']) {
+                for (const tab of ['Overview', 'Repositories', 'Jobs', 'Logbook', 'Settings']) {
                     await page.keyboard.press('Escape');
                     await page.waitForTimeout(200);
                     await page.click(`.nav-pills .nav-link:text-is("${tab}")`);

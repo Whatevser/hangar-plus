@@ -45,10 +45,7 @@
     const METHOD = { PACKAGEKIT: 'packagekit', BINARY: 'binary', UNAVAILABLE: 'unavailable' };
 
     // Install order: restic first, because everything else is optional polish.
-    // curl and unzip look like odd entries for a backup tool, but self-update depends
-    // on both and minimal server images often ship neither — leaving the user to
-    // discover it only when an update fails halfway.
-    const TOOLS = ['restic', 'rclone', 'fuse3', 'rear', 'libvirt', 'unzip', 'curl'];
+    const TOOLS = ['restic', 'rclone', 'fuse3'];
 
     const REQUIREMENTS = {
         restic: {
@@ -98,66 +95,6 @@
                 suse: ['fuse3'], arch: ['fuse3']
             }
         },
-        rear: {
-            tool: 'rear',
-            binary: 'rear',
-            versionArgs: ['--version'],
-            minVersion: null,
-            optional: true,
-            reason: 'Needed only for bare-metal disaster recovery.',
-            // ReaR is in RHEL AppStream, Fedora, Debian and openSUSE, but not in
-            // Arch's official repositories — so there is nothing PackageKit's alpm
-            // backend could resolve there, and no static release either.
-            packages: {
-                rhel: ['rear'], fedora: ['rear'], debian: ['rear'],
-                suse: ['rear'], arch: []
-            }
-        },
-        libvirt: {
-            tool: 'libvirt',
-            // virt-install is what the drill actually shells out to, so probe for it
-            // rather than for libvirtd: a host can run libvirtd and still not be able
-            // to create the throwaway VM.
-            binary: 'virt-install',
-            versionArgs: ['--version'],
-            minVersion: null,
-            optional: true,
-            reason: 'Needed only to verify a rescue image by booting it in a throwaway VM.',
-            packages: {
-                rhel: ['virt-install'], fedora: ['virt-install'],
-                // Debian and Ubuntu ship virt-install in virtinst, not virt-install.
-                debian: ['virtinst'],
-                suse: ['virt-install'], arch: ['virt-install']
-            }
-        },
-        unzip: {
-            tool: 'unzip',
-            binary: 'unzip',
-            versionArgs: ['-v'],
-            minVersion: null,
-            optional: true,
-            // Frequently absent on minimal server images, and self-update fails at
-            // the unpack step with a bare "command not found" without it.
-            reason: 'Needed only to unpack a downloaded update.',
-            packages: {
-                rhel: ['unzip'], fedora: ['unzip'], debian: ['unzip'],
-                suse: ['unzip'], arch: ['unzip']
-            }
-        },
-        curl: {
-            tool: 'curl',
-            binary: 'curl',
-            versionArgs: ['--version'],
-            minVersion: null,
-            optional: true,
-            // The plugin's CSP forbids talking to GitHub from the browser, so the
-            // update check runs through curl on the host. No curl, no update check.
-            reason: 'Needed only to check for and download updates.',
-            packages: {
-                rhel: ['curl'], fedora: ['curl'], debian: ['curl'],
-                suse: ['curl'], arch: ['curl']
-            }
-        }
     };
 
     // Packaged, but not by the distribution itself. A stock RHEL host without EPEL

@@ -24,7 +24,6 @@ const path = require('node:path');
 
 const HELPER = path.join(__dirname, '..', '..', 'libexec', 'hangar-run');
 const Container = require('../../js/core/sources-container.js');
-const Libvirt = require('../../js/core/sources-libvirt.js');
 const LOCAL_REPO = { id: 'main', kind: 'local', path: '/srv/backup' };
 const STORE = '/stub/store';
 
@@ -80,37 +79,6 @@ echo "runuser -u $user -- $*" >> "$HANGAR_TEST_CMD_LOG"
 exec "$@"
 `;
 
-// Two disks (one of them shared with every other domain, and with a space in
-// its name), an attached ISO and an empty optical drive — the four rows that
-// decide whether the parser is right.
-const VIRSH_STUB = `#!/bin/sh
-echo "virsh $*" >> "$HANGAR_TEST_CMD_LOG"
-if [ "$1" = "-c" ]; then shift 2; fi
-cmd=$1
-shift
-case "$cmd" in
-  domblklist)
-    domain=$2
-    printf ' Type   Device   Target   Source\\n'
-    printf '------------------------------------------------\\n'
-    printf ' file   disk     vda      ${STORE}/%s.qcow2\\n' "$domain"
-    printf ' file   disk     vdb      ${STORE}/shared data.qcow2\\n'
-    printf ' file   cdrom    sda      ${STORE}/install.iso\\n'
-    printf ' file   cdrom    sdb      -\\n'
-    ;;
-  dumpxml)
-    printf '<domain type="kvm"><name>%s</name></domain>\\n' "$1"
-    ;;
-esac
-exit 0
-`;
-
-const VIRSH_STUB_UNREACHABLE = `#!/bin/sh
-echo "virsh $*" >> "$HANGAR_TEST_CMD_LOG"
-echo "error: failed to connect to the hypervisor" >&2
-exit 1
-`;
-
 // Inspects fine, refuses to stop. The pre step that fails is the interesting
 // one: the post steps still have to run.
 const RUNTIME_STUB_STOP_FAILS = `#!/bin/sh
@@ -142,7 +110,6 @@ const DEFAULT_STUBS = {
     podman: RUNTIME_STUB,
     docker: RUNTIME_STUB,
     runuser: RUNUSER_STUB,
-    virsh: VIRSH_STUB
 };
 
 // ---- harness ---------------------------------------------------------------
@@ -206,7 +173,6 @@ function refuse(host, jobId) {
 // throwing, because the failure paths are what these tests are about.
 function run(host, jobId) {
     host.env.HANGAR_STATE_DIR = path.join(host.dir, 'state');
-    host.env.HANGAR_LIBVIRT_XML_DIR = path.join(host.dir, 'xml');
     try {
         execFileSync('python3', [HELPER, jobId], { env: host.env, encoding: 'utf8', stdio: 'pipe' });
         return { code: 0, stderr: '' };
@@ -410,157 +376,6 @@ test('unknown runtimes, unsafe names and bad users are refused', () => {
 
 // ---- libvirt sources -------------------------------------------------------
 
-test('domain disks come from domblklist, skipping cdroms and empty drives', () => {
-    const j = job({ sources: [{ id: 'vms', kind: 'libvirt', domains: ['web'] }] });
-    withHost([j], null, (host) => {
-        const p = plan(host, 'j');
-        const disks = p.sources[0].paths.filter((x) => x.endsWith('.qcow2'));
-        // The space in "shared data.qcow2" survives as one argv entry, which is
-        // what the bounded four-column split exists for.
-        assert.deepEqual(disks, [`${STORE}/shared data.qcow2`, `${STORE}/web.qcow2`]);
-        assert.ok(!p.backup.some((a) => a.endsWith('.iso')), 'installation media is not VM state');
-        assert.ok(!p.backup.includes('-'));
-        assert.ok(host.commands().includes('virsh -c qemu:///system domblklist --details web'));
-    });
-});
-
-test('a disk shared by two domains is backed up once', () => {
-    const j = job({ sources: [{ id: 'vms', kind: 'libvirt', domains: ['web', 'db'] }] });
-    withHost([j], null, (host) => {
-        const p = plan(host, 'j');
-        const shared = p.sources[0].paths.filter((x) => x === `${STORE}/shared data.qcow2`);
-        assert.equal(shared.length, 1);
-    });
-});
-
-test('the domain XML is staged under /var/lib/hangar/libvirt and backed up with the disks', () => {
-    // A disk image without its XML is not a restorable VM, so includeXml is on
-    // unless the user turned it off.
-    const j = job({ sources: [{ id: 'vms', kind: 'libvirt', domains: ['web'] }] });
-    withHost([j], null, (host) => {
-        const p = plan(host, 'j');
-        assert.equal(p.sources[0].includeXml, true);
-        assert.deepEqual(p.sources[0].xml, ['/var/lib/hangar/libvirt/web.xml']);
-        assert.ok(p.backup.includes('/var/lib/hangar/libvirt/web.xml'));
-        assert.deepEqual(p.pre[0].argv, ['virsh', '-c', 'qemu:///system', 'dumpxml', 'web']);
-        assert.equal(p.pre[0].capture, '/var/lib/hangar/libvirt/web.xml');
-        // --print-plan describes the run; it must not perform it.
-        assert.ok(!host.commands().some((c) => c.includes('dumpxml')));
-    });
-});
-
-test('includeXml false drops both the dump step and the staged path', () => {
-    const j = job({
-        sources: [{ id: 'vms', kind: 'libvirt', domains: ['web'], includeXml: false }]
-    });
-    withHost([j], null, (host) => {
-        const p = plan(host, 'j');
-        assert.deepEqual(p.sources[0].xml, []);
-        assert.deepEqual(p.pre, []);
-        assert.ok(!p.backup.some((a) => a.endsWith('.xml')));
-    });
-});
-
-test('agent quiesce freezes every domain and thaws in reverse', () => {
-    const j = job({
-        sources: [{ id: 'vms', kind: 'libvirt', domains: ['web', 'db'], quiesce: 'agent',
-            includeXml: false }]
-    });
-    withHost([j], null, (host) => {
-        const p = plan(host, 'j');
-        assert.deepEqual(argvs(p.pre), [
-            ['virsh', '-c', 'qemu:///system', 'domfsfreeze', 'db'],
-            ['virsh', '-c', 'qemu:///system', 'domfsfreeze', 'web']
-        ]);
-        assert.deepEqual(argvs(p.post), [
-            ['virsh', '-c', 'qemu:///system', 'domfsthaw', 'web'],
-            ['virsh', '-c', 'qemu:///system', 'domfsthaw', 'db']
-        ]);
-    });
-});
-
-test('shutdown quiesce shuts down first and starts again afterwards', () => {
-    const j = job({
-        sources: [{ id: 'vms', kind: 'libvirt', domains: ['web'], quiesce: 'shutdown' }]
-    });
-    withHost([j], null, (host) => {
-        const p = plan(host, 'j');
-        // XML is dumped before the domain goes down: a shutdown that fails
-        // still has to leave us with something restorable.
-        assert.deepEqual(argvs(p.pre), [
-            ['virsh', '-c', 'qemu:///system', 'dumpxml', 'web'],
-            ['virsh', '-c', 'qemu:///system', 'shutdown', 'web']
-        ]);
-        assert.deepEqual(argvs(p.post), [['virsh', '-c', 'qemu:///system', 'start', 'web']]);
-    });
-});
-
-test('quiesce none leaves the domain alone', () => {
-    const j = job({
-        sources: [{ id: 'vms', kind: 'libvirt', domains: ['web'], includeXml: false }]
-    });
-    withHost([j], null, (host) => {
-        const p = plan(host, 'j');
-        assert.deepEqual(p.pre, []);
-        assert.deepEqual(p.post, []);
-    });
-});
-
-test('a session URI is passed through to virsh unchanged', () => {
-    const j = job({
-        sources: [{ id: 'vms', kind: 'libvirt', uri: 'qemu:///session', domains: ['web'] }]
-    });
-    withHost([j], null, (host) => {
-        const p = plan(host, 'j');
-        assert.deepEqual(p.pre[0].argv.slice(0, 3), ['virsh', '-c', 'qemu:///session']);
-        assert.ok(host.commands().includes('virsh -c qemu:///session domblklist --details web'));
-    });
-});
-
-test('an unreachable hypervisor is reported, not hung on', () => {
-    // qemu:///system times out outright on some hosts. A unit that never
-    // finishes is invisible in a way a failed one is not.
-    const j = job({ sources: [{ id: 'vms', kind: 'libvirt', domains: ['web'] }] });
-    withHost([j], { virsh: VIRSH_STUB_UNREACHABLE }, (host) => {
-        const res = refuse(host, 'j');
-        assert.equal(res.code, 1);
-        assert.match(res.stderr, /could not list domain disks/);
-        assert.match(res.stderr, /failed to connect to the hypervisor/);
-    });
-});
-
-test('a virsh that never answers is abandoned at the deadline', () => {
-    const j = job({ sources: [{ id: 'vms', kind: 'libvirt', domains: ['web'] }] });
-    const stub = '#!/bin/sh\nsleep 30\n';
-    withHost([j], { virsh: stub }, (host) => {
-        host.env.HANGAR_CMD_TIMEOUT = '1';
-        const started = Date.now();
-        const res = refuse(host, 'j');
-        assert.equal(res.code, 1);
-        assert.match(res.stderr, /no answer within/);
-        assert.ok(Date.now() - started < 15000, 'the deadline did not fire');
-    });
-});
-
-test('unsafe domain names and unknown quiesce modes are refused', () => {
-    const cases = [
-        [{ id: 'a', kind: 'libvirt', domains: [] }, /lists no domains/],
-        [{ id: 'b', kind: 'libvirt', domains: ['../../etc/passwd'] }, /unsafe domain name/],
-        [{ id: 'c', kind: 'libvirt', domains: ['web; reboot'] }, /unsafe domain name/],
-        [{ id: 'd', kind: 'libvirt', domains: ['-all'] }, /unsafe domain name/],
-        [{ id: 'e', kind: 'libvirt', domains: ['web'], quiesce: 'magic' }, /unknown quiesce mode/]
-    ];
-    const jobs = cases.map((c, i) => job({ id: 'bad' + i, sources: [c[0]] }));
-    withHost(jobs, null, (host) => {
-        cases.forEach((c, i) => {
-            const res = refuse(host, 'bad' + i);
-            assert.ok(res, 'case ' + i + ' should have been refused');
-            assert.equal(res.code, 1, 'case ' + i);
-            assert.match(res.stderr, c[1], 'case ' + i);
-        });
-    });
-});
-
 // ---- what --print-plan cannot prove: the try/finally guarantee -------------
 
 test('containers are started again even when the backup fails', () => {
@@ -621,26 +436,6 @@ test('a failing post step is reported even though the snapshot was written', () 
     });
 });
 
-test('a clean run stages the domain XML and unwinds the freeze', () => {
-    const j = job({
-        sources: [{ id: 'vms', kind: 'libvirt', domains: ['web'], quiesce: 'agent' }]
-    });
-    withHost([j], { restic: RESTIC_STUB_OK }, (host) => {
-        const res = run(host, 'j');
-        assert.equal(res.code, 0, res.stderr);
-        // The dump is captured to a file rather than piped through a shell, and
-        // that file is what makes the disk image a restorable VM.
-        assert.equal(fs.readFileSync(path.join(host.dir, 'xml', 'web.xml'), 'utf8'),
-            '<domain type="kvm"><name>web</name></domain>\n');
-        const cmds = host.commands();
-        assert.ok(cmds.includes('virsh -c qemu:///system domfsfreeze web'));
-        assert.ok(cmds.includes('virsh -c qemu:///system domfsthaw web'));
-        assert.ok(cmds.indexOf('virsh -c qemu:///system domfsfreeze web') <
-                  cmds.findIndex((c) => c.startsWith('restic')));
-        assert.ok(cmds.findIndex((c) => c.startsWith('restic')) <
-                  cmds.indexOf('virsh -c qemu:///system domfsthaw web'));
-    });
-});
 
 // ---- agreement with js/core ------------------------------------------------
 //
@@ -671,75 +466,20 @@ test('container argv and restic args agree with js/core/sources-container.js', (
     });
 });
 
-test('libvirt argv and restic args agree with js/core/sources-libvirt.js', () => {
-    const source = {
-        id: 'vms', kind: 'libvirt', uri: 'qemu:///system', domains: ['web', 'db'],
-        quiesce: 'agent', excludes: ['*.iso'], tags: ['vms']
-    };
-    withHost([job({ sources: [source] })], null, (host) => {
-        const p = plan(host, 'j');
-        const py = p.sources[0];
-        const disks = py.paths.filter((x) => py.xml.indexOf(x) < 0);
-
-        // The XML dumps are hangar-run's own doing (the JS stages them from the
-        // browser), so only the quiesce half is compared.
-        const quiesceSteps = argvs(p.pre).filter((a) => a[3] !== 'dumpxml');
-        assert.deepEqual(quiesceSteps, Libvirt.preCommands(source));
-        assert.deepEqual(argvs(p.post), Libvirt.postCommands(source));
-
-        assert.deepEqual(py.flags.concat(py.paths),
-            Libvirt.toResticArgs(Object.assign({}, source, { resolvedPaths: disks })),
-            'python and javascript disagree on the restic arguments');
-        // Including where the XML is staged — a path the two sides invent
-        // separately is a path a restore would look for in the wrong place.
-        assert.deepEqual(py.xml, source.domains.slice().sort()
-            .map((d) => Libvirt.xmlPathFor(source, d)));
-    });
-});
 
 // ---- the whole job ---------------------------------------------------------
 
-test('a job mixing all three kinds unwinds in the reverse of the order it wound up', () => {
-    const j = job({
-        sources: [
-            { id: 'files', kind: 'filesystem', paths: ['/etc'] },
-            { id: 'vols', kind: 'container', volumes: ['pgdata'], containers: ['app', 'db'],
-                consistency: 'stop' },
-            { id: 'vms', kind: 'libvirt', domains: ['web'], quiesce: 'agent', includeXml: false }
-        ]
-    });
-    withHost([j], null, (host) => {
-        const p = plan(host, 'j');
-        assert.deepEqual(p.sources.map((s) => s.kind), ['filesystem', 'container', 'libvirt']);
-        assert.deepEqual(argvs(p.pre), [
-            ['podman', 'stop', 'app'],
-            ['podman', 'stop', 'db'],
-            ['virsh', '-c', 'qemu:///system', 'domfsfreeze', 'web']
-        ]);
-        // Across sources as well as within one: the VM thaws before the
-        // containers that might be talking to it come back.
-        assert.deepEqual(argvs(p.post), [
-            ['virsh', '-c', 'qemu:///system', 'domfsthaw', 'web'],
-            ['podman', 'start', 'db'],
-            ['podman', 'start', 'app']
-        ]);
-        assert.ok(p.backup.includes('/etc'));
-        assert.ok(p.backup.includes(`${STORE}/pgdata/_data`));
-        assert.ok(p.backup.includes(`${STORE}/web.qcow2`));
-    });
-});
 
 test('every step carries the id of the source that asked for it', () => {
     const j = job({
         sources: [
             { id: 'vols', kind: 'container', volumes: ['v'], containers: ['db'],
                 consistency: 'stop' },
-            { id: 'vms', kind: 'libvirt', domains: ['web'] }
         ]
     });
     withHost([j], null, (host) => {
         const p = plan(host, 'j');
-        assert.deepEqual(p.pre.map((s) => s.source), ['vols', 'vms']);
+        assert.deepEqual(p.pre.map((s) => s.source), ['vols']);
         assert.deepEqual(p.post.map((s) => s.source), ['vols']);
     });
 });
@@ -831,17 +571,6 @@ shift
 exec "$@"
 `;
 
-const VIRSH_STUB_ARGV = `#!/bin/sh
-${RECORD_ARGV}record_argv "$@"
-if [ "$1" = "-c" ]; then shift 2; fi
-if [ "$1" = "domblklist" ]; then
-  printf ' Type   Device   Target   Source\\n'
-  printf ' file   disk     vda      ${STORE}/disk.qcow2\\n'
-fi
-if [ "$1" = "dumpxml" ]; then printf '<domain/>\\n'; fi
-exit 0
-`;
-
 // Answers with a mount point no kernel could produce. Handing it to execve would
 // back up a path silently truncated at the NUL.
 const RUNTIME_STUB_NUL_MOUNT = `#!/bin/sh
@@ -865,40 +594,6 @@ fi
 exit 0
 `;
 
-// Freezes fine, refuses to thaw the FIRST domain it is asked about. Whether the
-// second domain is still thawed afterwards is the whole question.
-const VIRSH_STUB_THAW_FAILS = `#!/bin/sh
-echo "virsh $*" >> "$HANGAR_TEST_CMD_LOG"
-if [ "$1" = "-c" ]; then shift 2; fi
-case "$1" in
-  domblklist)
-    printf ' Type   Device   Target   Source\\n'
-    printf ' file   disk     vda      ${STORE}/%s.qcow2\\n' "$3"
-    ;;
-  dumpxml) printf '<domain/>\\n' ;;
-  domfsthaw)
-    if [ "$2" = "web" ]; then echo "error: Unable to thaw filesystems" >&2; exit 1; fi
-    ;;
-esac
-exit 0
-`;
-
-// Stops fine, then refuses to freeze. The containers an earlier source stopped
-// are the ones nobody would think to check.
-const VIRSH_STUB_FREEZE_FAILS = `#!/bin/sh
-echo "virsh $*" >> "$HANGAR_TEST_CMD_LOG"
-if [ "$1" = "-c" ]; then shift 2; fi
-case "$1" in
-  domblklist)
-    printf ' Type   Device   Target   Source\\n'
-    printf ' file   disk     vda      ${STORE}/%s.qcow2\\n' "$3"
-    ;;
-  dumpxml) printf '<domain/>\\n' ;;
-  domfsfreeze) echo "error: Unable to freeze filesystems" >&2; exit 1 ;;
-esac
-exit 0
-`;
-
 // ---- harness additions -----------------------------------------------------
 
 // spawnSync rather than execFileSync: the warnings under test are journal lines
@@ -915,7 +610,6 @@ function planAndLog(host, jobId) {
 
 function runAndLog(host, jobId) {
     host.env.HANGAR_STATE_DIR = path.join(host.dir, 'state');
-    host.env.HANGAR_LIBVIRT_XML_DIR = path.join(host.dir, 'xml');
     const res = spawnSync('python3', [HELPER, jobId], { env: host.env, encoding: 'utf8' });
     return { code: res.status, stderr: String(res.stderr || '') };
 }
@@ -960,22 +654,6 @@ function journal(stderr) {
 
 // ---- shell safety: one argv element, always --------------------------------
 
-test('a domain name containing a space reaches virsh as exactly one argument', () => {
-    // Spaces are legal in a libvirt domain name and both implementations accept
-    // them, which makes this the sharpest proof available: if the name were ever
-    // joined into a command line, virsh would be asked about two domains.
-    const j = job({ sources: [{ id: 'vms', kind: 'libvirt', domains: ['web server'] }] });
-    withHost([j], { virsh: VIRSH_STUB_ARGV }, (host) => {
-        const p = plan(host, 'j');
-        assert.deepEqual(argvCalls(host, 'virsh'), [
-            ['-c', 'qemu:///system', 'domblklist', '--details', 'web server']
-        ]);
-        // The same name, still whole, in the step the runner will execute.
-        assert.deepEqual(p.pre[0].argv,
-            ['virsh', '-c', 'qemu:///system', 'dumpxml', 'web server']);
-        assert.equal(p.pre[0].capture, '/var/lib/hangar/libvirt/web server.xml');
-    });
-});
 
 test('the dump command survives runuser and the runtime as a single argument', () => {
     // It passes through three programs before it reaches sh: runuser, the
@@ -1033,10 +711,6 @@ test('a name that would become a second argument is refused, never quoted', () =
             /not a valid user name/],
         [{ id: 'k', kind: 'container', volumes: ['v'], user: 'appuser root' },
             /not a valid user name/],
-        [{ id: 'l', kind: 'libvirt', domains: ['--all'] }, /unsafe domain name/],
-        [{ id: 'm', kind: 'libvirt', domains: ['web;reboot'] }, /unsafe domain name/],
-        [{ id: 'n', kind: 'libvirt', domains: ['web' + NUL] }, /NUL byte|unsafe domain name/],
-        [{ id: 'o', kind: 'libvirt', domains: ['$(virsh destroy web)'] }, /unsafe domain name/]
     ];
     const jobs = cases.map((c, i) => job({ id: 'evil' + i, sources: [c[0]] }));
     withHost(jobs, null, (host) => {
@@ -1120,7 +794,6 @@ test('an exclude given as a bare string is refused, not iterated per letter', ()
     const cases = [
         { id: 'a', kind: 'container', volumes: ['v'], excludes: '*.tmp' },
         { id: 'b', kind: 'container', volumes: ['v'], tags: 'nightly' },
-        { id: 'c', kind: 'libvirt', domains: ['web'], excludes: '*.iso' },
         { id: 'd', kind: 'filesystem', paths: ['/etc'], excludes: '*.tmp' }
     ];
     const jobs = cases.map((c, i) => job({ id: 'str' + i, sources: [c] }));
@@ -1138,9 +811,7 @@ test('a NUL in an exclude, a tag, a path or a URI is refused wherever it appears
     const cases = [
         { id: 'a', kind: 'container', volumes: ['v'], excludes: ['*.tmp' + NUL] },
         { id: 'b', kind: 'container', volumes: ['v'], tags: ['nightly' + NUL] },
-        { id: 'c', kind: 'libvirt', domains: ['web'], tags: ['vm' + NUL] },
         { id: 'd', kind: 'filesystem', paths: ['/etc' + NUL] },
-        { id: 'e', kind: 'libvirt', domains: ['web'], uri: 'qemu:///system' + NUL }
     ];
     const jobs = cases.map((c, i) => job({ id: 'nul' + i, sources: [c] }));
     withHost(jobs, null, (host) => {
@@ -1180,7 +851,6 @@ test('every argument of every command in the plan is a plain string', () => {
             { id: 'files', kind: 'filesystem', paths: ['/etc'], excludeFile: ['/e.txt'] },
             { id: 'vols', kind: 'container', user: 'appuser', volumes: ['pgdata'],
                 containers: ['app', 'db'], consistency: 'stop', excludes: ['*.sock'] },
-            { id: 'vms', kind: 'libvirt', domains: ['web'], quiesce: 'agent', tags: ['vm'] }
         ]
     });
     withHost([j], null, (host) => {
@@ -1199,67 +869,6 @@ test('every argument of every command in the plan is a plain string', () => {
 });
 
 // ---- the unwind: nothing left paused, stopped, frozen or shut down ---------
-
-test('a frozen guest is thawed even when the backup fails', () => {
-    // The container half of this is covered above; the VM half matters more,
-    // because a frozen guest is not merely down — its filesystems stay wedged
-    // until something thaws them.
-    const j = job({
-        sources: [{ id: 'vms', kind: 'libvirt', domains: ['web'], quiesce: 'agent' }]
-    });
-    withHost([j], { restic: RESTIC_STUB_FAILS }, (host) => {
-        const res = run(host, 'j');
-        assert.equal(res.code, 2, 'a failed backup is still a failed backup');
-        const cmds = host.commands();
-        assert.ok(cmds.includes('virsh -c qemu:///system domfsthaw web'), cmds.join('\n'));
-        assert.ok(cmds.findIndex((c) => c.startsWith('restic')) <
-                  cmds.indexOf('virsh -c qemu:///system domfsthaw web'),
-        'the thaw must come after restic was given its chance, not instead of it');
-        assertNoTraceback(res.stderr);
-    });
-});
-
-test('a shut-down domain is started again even when the backup fails', () => {
-    const j = job({
-        sources: [{ id: 'vms', kind: 'libvirt', domains: ['web', 'db'], quiesce: 'shutdown' }]
-    });
-    withHost([j], { restic: RESTIC_STUB_FAILS }, (host) => {
-        const res = run(host, 'j');
-        assert.equal(res.code, 2);
-        const cmds = host.commands();
-        assert.ok(cmds.includes('virsh -c qemu:///system start web'), cmds.join('\n'));
-        assert.ok(cmds.includes('virsh -c qemu:///system start db'), cmds.join('\n'));
-        assertNoTraceback(res.stderr);
-    });
-});
-
-test('one post step that fails does not strand the ones queued behind it', () => {
-    // An unwind that aborts on its first failure leaves every later container
-    // stopped and every later guest frozen — the exact outcome the try/finally
-    // exists to prevent, reintroduced one level down.
-    const j = job({
-        sources: [
-            { id: 'vols', kind: 'container', volumes: ['pgdata'],
-                containers: ['app', 'db'], consistency: 'stop' },
-            { id: 'vms', kind: 'libvirt', domains: ['web', 'db'], quiesce: 'agent',
-                includeXml: false }
-        ]
-    });
-    withHost([j], { virsh: VIRSH_STUB_THAW_FAILS, restic: RESTIC_STUB_OK }, (host) => {
-        const res = run(host, 'j');
-        assert.equal(res.code, 4, 'a host left in a bad state is not a clean run');
-        const cmds = host.commands();
-        // The thaw of 'web' is the one that fails. Everything after it still ran.
-        assert.ok(cmds.includes('virsh -c qemu:///system domfsthaw web'));
-        assert.ok(cmds.includes('virsh -c qemu:///system domfsthaw db'), cmds.join('\n'));
-        assert.ok(cmds.includes('podman start db'), cmds.join('\n'));
-        assert.ok(cmds.includes('podman start app'), cmds.join('\n'));
-        assertNoTraceback(res.stderr);
-        const state = JSON.parse(fs.readFileSync(path.join(host.dir, 'state', 'j.json'), 'utf8'));
-        assert.equal(state.snapshot, 'abc1234');
-        assert.equal(state.post_failures, 1);
-    });
-});
 
 test('a restic that cannot be started is a reported failure, and the unwind still runs', () => {
     // Popen RAISES rather than returning a code when the binary is not there —
@@ -1303,29 +912,6 @@ test('a post step the runtime refuses is counted rather than fatal', () => {
     });
 });
 
-test('a later source failing to wind up still unwinds the earlier source', () => {
-    // The container source stops its containers, then the libvirt source's freeze
-    // fails. Those containers were stopped by a source that succeeded, and they
-    // are the ones nobody would think to check.
-    const j = job({
-        sources: [
-            { id: 'vols', kind: 'container', volumes: ['pgdata'],
-                containers: ['app', 'db'], consistency: 'stop' },
-            { id: 'vms', kind: 'libvirt', domains: ['web'], quiesce: 'agent',
-                includeXml: false }
-        ]
-    });
-    withHost([j], { virsh: VIRSH_STUB_FREEZE_FAILS, restic: RESTIC_STUB_OK }, (host) => {
-        const res = run(host, 'j');
-        assert.equal(res.code, 4);
-        assert.match(res.stderr, /source pre-command failed/);
-        const cmds = host.commands();
-        assert.ok(!cmds.some((c) => c.startsWith('restic')), 'the backup must not have run');
-        assert.ok(cmds.includes('podman start db'), cmds.join('\n'));
-        assert.ok(cmds.includes('podman start app'), cmds.join('\n'));
-        assertNoTraceback(res.stderr);
-    });
-});
 
 // ---- the consistency warnings have to reach the journal --------------------
 //
@@ -1396,40 +982,15 @@ test('a podman source with no owner warns that root\'s store is a different stor
     });
 });
 
-test('every libvirt consistency choice that costs something says so', () => {
-    const cases = [
-        [{ quiesce: 'none', includeXml: true }, ['quiesce-crash-consistent']],
-        [{ quiesce: 'agent', includeXml: true }, ['quiesce-agent-required']],
-        [{ quiesce: 'shutdown', includeXml: true }, []],
-        [{ quiesce: 'shutdown', includeXml: false }, ['no-xml']],
-        [{ quiesce: 'none', includeXml: false }, ['quiesce-crash-consistent', 'no-xml']]
-    ];
-    const jobs = cases.map((c, i) => job({
-        id: 'q' + i,
-        sources: [Object.assign({ id: 'vms', kind: 'libvirt', domains: ['web'] }, c[0])]
-    }));
-    withHost(jobs, null, (host) => {
-        cases.forEach((c, i) => {
-            const res = planAndLog(host, 'q' + i);
-            assert.equal(res.code, 0, res.stderr);
-            assert.deepEqual(res.plan.warnings.map((w) => w.code), c[1], JSON.stringify(c[0]));
-            c[1].forEach((code) => {
-                assert.ok(journal(res.stderr).some((e) => e.code === code),
-                    code + ' never reached the journal:\n' + res.stderr);
-            });
-        });
-    });
-});
 
 test('a warning is a warning: it never stops the backup being planned or run', () => {
     const j = job({
-        sources: [{ id: 'vms', kind: 'libvirt', domains: ['web'], quiesce: 'none',
-            includeXml: false }]
+        sources: [{ id: 'data', kind: 'container', volumes: ['pgdata'], containers: ['postgres'], consistency: 'none' }]
     });
     withHost([j], { restic: RESTIC_STUB_OK }, (host) => {
         const res = runAndLog(host, 'j');
         assert.equal(res.code, 0, res.stderr);
-        assert.ok(journal(res.stderr).some((e) => e.code === 'quiesce-crash-consistent'));
+        assert.ok(journal(res.stderr).some((e) => e.code === 'live-database'));
         const state = JSON.parse(fs.readFileSync(path.join(host.dir, 'state', 'j.json'), 'utf8'));
         assert.equal(state.status, 'ok');
     });
@@ -1443,17 +1004,12 @@ test('the runner warns with the codes js/core reports, not a second dialect', ()
         id: 'vols', kind: 'container', volumes: ['pgdata'],
         containers: ['app-mongo-1'], consistency: 'none'
     };
-    const libvirt = {
-        id: 'vms', kind: 'libvirt', domains: ['web'], quiesce: 'agent', includeXml: false
-    };
-    withHost([job({ id: 'c', sources: [container] }), job({ id: 'v', sources: [libvirt] })],
+    withHost([job({ id: 'c', sources: [container] })],
         null, (host) => {
             const jsCodes = (impl, s) => impl.validate(s)
                 .filter((p) => p.severity === 'warning').map((p) => p.code).sort();
             assert.deepEqual(planAndLog(host, 'c').plan.warnings.map((w) => w.code).sort(),
                 jsCodes(Container, container));
-            assert.deepEqual(planAndLog(host, 'v').plan.warnings.map((w) => w.code).sort(),
-                jsCodes(Libvirt, libvirt));
         });
 });
 
@@ -1490,8 +1046,6 @@ test('no shape of junk in a job file makes the helper crash instead of refusing'
         [{ kind: 'container', volumes: ['v'], containers: ['db'], consistency: 'stop' },
             ['id', 'runtime', 'user', 'volumes', 'containers', 'consistency', 'command',
                 'excludes', 'tags']],
-        [{ kind: 'libvirt', domains: ['web'] },
-            ['uri', 'domains', 'quiesce', 'includeXml', 'excludes', 'tags']]
     ];
 
     const jobs = [];

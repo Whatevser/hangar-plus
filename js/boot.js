@@ -9,9 +9,7 @@
         'html/modals/job-edit.html',
         'html/modals/restore.html',
         'html/modals/provision.html',
-        'html/modals/recovery.html',
         'html/modals/password.html',
-        'html/modals/update.html',
         'html/modals/fspicker.html'
     ];
 

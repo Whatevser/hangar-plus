@@ -27,7 +27,7 @@
     // The settings a user may edit. `version` is in DEFAULT_GLOBAL too, but
     // it is a schema marker owned by core/config.js, not a preference.
     const EDITABLE = ['mountRoot', 'mountIdleTimeoutSec', 'notifyOnFailure',
-        'updateRepo', 'updateCheckOnStartup', 'repoSizeMaxAgeHours'];
+        'repoSizeMaxAgeHours'];
 
     // Bounds for the idle timeout, with reasons, because "absurd" has to mean
     // something specific to be testable:
@@ -164,52 +164,6 @@
         return ['Notify on failure must be true or false.'];
     }
 
-    // index.html loads update.js AFTER this file, so HangarUpdate cannot be
-    // resolved at load time. The require is guarded because a settings form that
-    // will not render is a worse outcome than an update check that cannot be
-    // configured.
-    function updateModule() {
-        if (root.HangarUpdate) return root.HangarUpdate;
-        if (!req) return null;
-        try { return req('./update.js'); } catch (e) { return null; }
-    }
-
-    // The same grammar update.js accepts, restated here so the field is still
-    // validated when HangarUpdate is absent. Falling back to "accept anything"
-    // is the worse failure: it saves a repository hangar can never check, and
-    // the user finds out months later by never being offered an update.
-    const OWNER_NAME_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
-    const MAX_REPO_LEN = 200;
-    const BAD_REPO = 'Update repository must be "owner/name" or a GitHub repository URL.';
-
-    function looksLikeRepo(s) {
-        return OWNER_NAME_RE.test(str(s)
-            .replace(/^https?:\/\/(www\.)?github\.com\//i, '')
-            .replace(/\.git$/i, '')
-            .replace(/^\/+|\/+$/g, ''));
-    }
-
-    // Empty is valid and is the default: with no repository set, hangar never
-    // contacts GitHub at all. A non-empty value must be a real owner/name, since a
-    // wrong one would silently never find an update.
-    function updateRepoProblems(value) {
-        const s = trimmed(value);
-        if (s === '') return [];
-        // Bounded and control-character-free before anything downstream builds a
-        // curl argv out of it — checked here rather than trusted to the consumer.
-        if (s.length > MAX_REPO_LEN || /[\x00-\x1f\x7f]/.test(s)) return [BAD_REPO];
-        const Update = updateModule();
-        const ok = (Update && typeof Update.releasesApiUrl === 'function')
-            ? !!Update.releasesApiUrl(s)
-            : looksLikeRepo(s);
-        return ok ? [] : [BAD_REPO];
-    }
-
-    function checkOnStartupProblems(value) {
-        if (typeof value === 'boolean') return [];
-        return ['Check for updates on startup must be true or false.'];
-    }
-
     // Per-field problems, so the form can mark the field that is wrong rather than
     // showing one undifferentiated list.
     function fieldProblems(form) {
@@ -218,8 +172,6 @@
             mountRoot: pathProblems(f.mountRoot),
             mountIdleTimeoutSec: timeoutProblems(f.mountIdleTimeoutSec),
             notifyOnFailure: notifyProblems(f.notifyOnFailure),
-            updateRepo: updateRepoProblems(f.updateRepo),
-            updateCheckOnStartup: checkOnStartupProblems(f.updateCheckOnStartup),
             repoSizeMaxAgeHours: sizeAgeProblems(f.repoSizeMaxAgeHours)
         };
     }
@@ -242,8 +194,6 @@
             mountRoot: str(merged.mountRoot),
             mountIdleTimeoutSec: merged.mountIdleTimeoutSec,
             notifyOnFailure: !!merged.notifyOnFailure,
-            updateRepo: str(merged.updateRepo),
-            updateCheckOnStartup: !!merged.updateCheckOnStartup,
             repoSizeMaxAgeHours: merged.repoSizeMaxAgeHours
         };
     }
@@ -258,8 +208,6 @@
             mountRoot: trimmed(f.mountRoot),
             mountIdleTimeoutSec: n === null ? null : n,
             notifyOnFailure: !!f.notifyOnFailure,
-            updateRepo: trimmed(f.updateRepo),
-            updateCheckOnStartup: !!f.updateCheckOnStartup,
             repoSizeMaxAgeHours: h === null ? null : h
         };
     }
@@ -272,7 +220,7 @@
     // string. Anything unparseable compares as raw text, so a half-typed number
     // still reads as dirty instead of collapsing to "unchanged".
     function sameValue(name, a, b) {
-        if (name === 'notifyOnFailure' || name === 'updateCheckOnStartup') return !!a === !!b;
+        if (name === 'notifyOnFailure') return !!a === !!b;
         if (name === 'mountIdleTimeoutSec' || name === 'repoSizeMaxAgeHours') {
             const x = toNumber(a);
             const y = toNumber(b);
@@ -967,41 +915,6 @@
         '      </template>',
         '    </div>',
 
-        // --- updates ------------------------------------------------------
-        // Left empty by default: with no repository set, hangar makes no outbound
-        // requests of its own, which is the right default for a server tool.
-        '    <div class="mb-3">',
-        '      <label class="form-label" for="hangar-update-repo">Update repository</label>',
-        '      <input class="form-control form-control-sm" id="hangar-update-repo" type="text"',
-        '             placeholder="owner/name" spellcheck="false" autocomplete="off"',
-        '             x-model="form.updateRepo" @input="touched()"',
-        '             :class="hasProblem(\'updateRepo\') ? \'is-invalid\' : \'\'"',
-        '             :aria-invalid="hasProblem(\'updateRepo\') ? \'true\' : \'false\'"',
-        '             aria-describedby="hangar-update-repo-help">',
-        '      <div class="form-text" id="hangar-update-repo-help">',
-        '        The GitHub repository hangar checks for new releases. Leave empty to',
-        '        disable update checks entirely — hangar will not contact GitHub at all.',
-        '      </div>',
-        '      <template x-for="p in problemsFor(\'updateRepo\')" :key="p">',
-        '        <div class="invalid-feedback d-block" x-text="p"></div>',
-        '      </template>',
-        '    </div>',
-
-        '    <div class="form-check mb-3">',
-        '      <input class="form-check-input" id="hangar-update-startup" type="checkbox"',
-        '             x-model="form.updateCheckOnStartup" @change="touched()"',
-        '             :disabled="!form.updateRepo"',
-        '             aria-describedby="hangar-update-startup-help">',
-        '      <label class="form-check-label" for="hangar-update-startup">',
-        '        Check for updates when the page opens</label>',
-        '      <div class="form-text" id="hangar-update-startup-help">',
-        '        Only checks; it never installs anything without you confirming.',
-        '      </div>',
-        '      <template x-for="p in problemsFor(\'updateCheckOnStartup\')" :key="p">',
-        '        <div class="invalid-feedback d-block" x-text="p"></div>',
-        '      </template>',
-        '    </div>',
-
         '    <div class="d-flex align-items-center gap-2">',
         '      <button type="submit" class="btn btn-primary btn-sm" :disabled="!canSave()">Save</button>',
         '      <button type="button" class="btn btn-outline-secondary btn-sm"',
@@ -1091,11 +1004,10 @@
     root.hangarSettingsUi = hangarSettingsUi;
 
     const HangarSettingsUi = {
-        EDITABLE, NEVER_IDLE, MIN_IDLE_SEC, MAX_IDLE_SEC, MAX_PATH_LEN, MAX_REPO_LEN,
+        EDITABLE, NEVER_IDLE, MIN_IDLE_SEC, MAX_IDLE_SEC, MAX_PATH_LEN,
         NEVER_REFRESH_SIZE, MIN_SIZE_AGE_HOURS, MAX_SIZE_AGE_HOURS,
         VERSION_PATH, REMEDIATION_LABEL, STATUS_CLASS, TEMPLATE,
         toNumber, pathProblems, timeoutProblems, notifyProblems, sizeAgeProblems,
-        updateRepoProblems, checkOnStartupProblems, looksLikeRepo,
         fieldProblems, validateSettings,
         formFromSettings, settingsFromForm,
         sameValue, isDirty, changedFields,

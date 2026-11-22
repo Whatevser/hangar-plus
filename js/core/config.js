@@ -28,7 +28,6 @@
     function jobPath(id)    { return CONF_DIR + '/jobs/' + validateId(id) + '.json'; }
     function statePath(id)  { return STATE_DIR + '/' + validateId(id) + '.json'; }
     function globalPath()   { return CONF_DIR + '/config.json'; }
-    function drPath()       { return CONF_DIR + '/dr.json'; }
 
     const DEFAULT_GLOBAL = {
         version: 1,
@@ -45,12 +44,6 @@
         // refresh on its own; the Measure now button always works.
         repoSizeMaxAgeHours: 24,
         notifyOnFailure: true,
-        // Self-update. This is hangar's own upstream, so a fresh install can offer
-        // updates without being configured first. Note the consequence: the plugin
-        // contacts api.github.com once on page load. Clearing this field disables
-        // update checking entirely and stops all outbound requests.
-        updateRepo: 'ismetozalp/hangar',
-        updateCheckOnStartup: true
     };
 
     // Pure: merge stored settings over defaults, dropping unknown keys so a config
@@ -203,7 +196,7 @@
 
     const HangarConfig = {
         CONF_DIR, STATE_DIR, ID_RE, DEFAULT_GLOBAL,
-        validateId, repoPath, jobPath, statePath, globalPath, drPath,
+        validateId, repoPath, jobPath, statePath, globalPath,
         mergeGlobal, validateJob,
         // I/O
         readJson, writeJson, listIds, ensureDirFor, dirModeFor, writeFailureText,

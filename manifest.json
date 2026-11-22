@@ -8,7 +8,7 @@
             "path": "index.html",
             "order": 52,
             "keywords": [
-                { "matches": ["backup","restore","snapshot","restic","recovery","disaster","archive","rear","logbook"], "weight": 3 }
+                { "matches": ["backup","restore","snapshot","restic","archive","logbook"], "weight": 3 }
             ]
         }
     },

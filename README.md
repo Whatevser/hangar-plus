@@ -2,38 +2,6 @@
 
 A Cockpit plugin for creating and managing backups.
 
-Pick a destination, turn it on, forget about it — and when something is lost,
-scroll back through the **Logbook** and take it back. Hangar adds scheduled,
-deduplicated, encrypted backups with automatic retention thinning, a
-point-in-time file browser, and bare-metal disaster recovery to the Cockpit web
-console.
-
-> **🗂️ Another Cockpit plugin of mine:** [**Explorer**](https://github.com/ismetozalp/explorer)
-> (`ismetozalp/explorer`) — a file browser for the Cockpit console, with a two-pane
-> mode, an editor and an integrated terminal. Hangar's folder pickers and restores
-> land where Explorer can pick them up.
->
-> **📺 And another:** [**InFlight TV**](https://github.com/ismetozalp/iftv)
-> (`ismetozalp/iftv`) — an IPTV / live-TV player for the Cockpit console.
->
-> **📊 And another:** [**ctop**](https://github.com/ismetozalp/ctop) (`ismetozalp/ctop`) —
-> a live system/process monitor for the Cockpit console.
->
-> **⬇️ And another:** [**Manifest**](https://github.com/ismetozalp/manifest) (`ismetozalp/manifest`) —
-> a download manager for the Cockpit console (torrents, magnets, HTTP/FTP/Metalink via a
-> per-user `aria2c`).
->
-> **🖥️ And another:** [**Pilot**](https://github.com/ismetozalp/pilot) (`ismetozalp/pilot`) —
-> installs and manages a self-hosted [RustDesk](https://rustdesk.com/) remote-desktop server
-> (`hbbs`/`hbbr` plus an API control plane) from the Cockpit console.
-
-Cockpit has never shipped a backup UI. Upstream has
-[said as much](https://github.com/cockpit-project/cockpit/discussions/16302):
-*"It's not like we'd say 'no' to a backup UI (in fact, I think it'd be great to
-have one!) — it's just that there is none right now."* Hangar is that.
-
----
-
 ## What it does
 
 **Scheduled backups.** Jobs run from systemd timers with `Persistent=true`, so a
@@ -41,7 +9,11 @@ run missed while the machine was asleep fires when it wakes.
 
 **Automatic thinning.** The **Rolling** retention preset keeps 24 hourly, 30
 daily, 52 weekly and 12 monthly snapshots, grouped per host and path. Old
-snapshots age out on their own; you never manage them by hand.
+snapshots age out automatically.
+
+Choose **Disable** under job retention to keep every snapshot for manual deletion
+in the Logbook. While any local job using that repository has retention disabled,
+Hangar skips both policy pruning and size-limit pruning for that repository.
 
 **The Logbook.** Scroll back through every moment your data was captured and
 browse the filesystem exactly as it was. This is a real
@@ -53,14 +25,6 @@ removed between adjacent snapshots.
 **Anywhere for a destination.** Local disk, USB, SFTP, a REST server, Amazon S3,
 Backblaze B2, Azure, Google Cloud Storage, or any
 [rclone](https://rclone.org/overview/) remote — which covers most of the rest.
-
-**Bare-metal recovery.** Hangar builds a bootable rescue image with
-[ReaR](https://relax-and-recover.org/) that restores the whole system, to new
-hardware if necessary, from the same repository your files live in.
-
-**Verify recovery.** A rescue image you have never tested is a guess. Hangar can
-boot yours in a throwaway libvirt VM and prove the restore completes — before
-you need it.
 
 **Turnkey.** Hangar installs what it needs. It never tells you to go and run a
 package manager.
@@ -88,12 +52,6 @@ filesystem as it was. Badges mark what changed since the snapshot before it.*
 
 *Repositories — every destination with its real size and snapshot count.*
 
-![The Recovery screen: the ReaR configuration form, filled in for the attic repository](screenshots/recovery.png)
-
-*Recovery — a bootable rescue image that restores the whole machine from the
-same repository your files live in. The banner states the unsupported part
-plainly rather than hiding it.*
-
 ![The repository password dialog with a generated six-word passphrase](screenshots/password-generator.png)
 
 *A repository password cannot be recovered, so the dialog helps you make a
@@ -109,17 +67,6 @@ providers, in one form.*
 
 *Every path in hangar can be browsed instead of typed, as root, without leaving
 the page.*
-
-![The Verify recovery dialog, configured for a 1000 GB drill disk](screenshots/drill.png)
-
-*Verify recovery — the drill. It boots the rescue image you just built in a
-throwaway VM and reports whether recovery actually completed. The numbers in
-this dialog matter more than they look; the section below explains why.*
-
-![The Settings screen: eleven themes, mount options and update settings](screenshots/settings.png)
-
-*Settings — themes, how long a browsed snapshot stays mounted, how often
-repository sizes are measured, and where updates come from.*
 
 ---
 
@@ -183,180 +130,6 @@ at the point where you choose:
 | **Jottacloud** | Works as a destination, but **Hangar cannot create the remote.** rclone has no `authorize` flow for it — verified, not assumed: `rclone authorize jottacloud` answers *"not supported by this backend"*. Generate a personal login token in Jottacloud's web interface, run **interactive** `rclone config` once, and Hangar will pick the remote up. Note that the non-interactive `rclone config create <name> jottacloud` **appears to succeed but leaves a remote with no token** — it will show up in Hangar's list and fail at backup time. Use interactive `rclone config`. |
 
 
-## Recovering a whole machine, in practice
-
-Everything below was learned by running the drill against real hardware until it
-worked — a 1 TB NVMe machine restored from an SFTP repository on a NAS. None of
-it is theory, and most of it is not in ReaR's documentation in one place.
-
-### Size the drill disk like the original disk, not like the data
-
-The single most surprising lesson. ReaR recreates the **recorded partition
-table**, so a machine whose disk was 1 TB needs a 1 TB target — even if only
-45 GB is actually used. Give it less and recovery stops early:
-
-```
-Last partition /dev/sda3 must shrink by 935780679680 bytes to still fit on device
-ERROR: Last partition /dev/sda3 cannot shrink (new device more than 2% smaller,
-       see AUTOSHRINK_DISK_SIZE_LIMIT_PERCENTAGE)
-```
-
-The drill disk is sparse, so a 1000 GB disk costs only what the restore writes.
-In our run: **1000 GB requested, 47 GB actually consumed.**
-
-Set **System size (GB)** to roughly what a restore will write, and hangar warns
-you before the drill starts rather than twenty minutes in.
-
-### Raising the shrink limit is not the fix it appears to be
-
-`AUTOSHRINK_DISK_SIZE_LIMIT_PERCENTAGE` (in *Advanced rescue-system options*)
-lets ReaR shrink **only the last partition**. If that partition holds LVM, the
-volumes inside are still recreated at their recorded sizes. A layout with a
-70 GiB root LV cannot be restored onto a 60 GB disk however high you set it:
-ReaR retries the first oversized volume with `-l 100%FREE` and every volume
-after it then fails. ReaR's own documentation is blunt — a substantially smaller
-disk needs a hand-adapted `disklayout.conf`.
-
-It earns its place for the real case it was designed for: a replacement disk a
-few percent smaller than the original, which two vendors' "1 TB" drives usually
-are, and which ReaR's 2% default is enough to refuse.
-
-### Put the drill disk somewhere with room
-
-The libvirt default pool lives on `/`, which is usually the filesystem you are
-testing — and by definition too small to hold a copy of itself. Point **Disk
-location** at something roomier. hangar passes `--check disk_size=off` because
-libvirt judges a sparse disk as if fully allocated, which for a drill measures
-the wrong thing.
-
-### UEFI: Secure Boot off, and q35
-
-A ReaR rescue image is not signed by any key your firmware trusts. Boot it with
-Secure Boot on and it dies at the bootloader with `Access Denied`. hangar asks
-for the firmware feature explicitly rather than the `uefi` shorthand, which
-quietly selects a secure-boot firmware — and asks for the `q35` machine type,
-because every EFI firmware descriptor is q35-only.
-
-### The rescue menu reads different settings on BIOS and UEFI
-
-`ISO_DEFAULT` and `USER_INPUT_TIMEOUT` steer the **syslinux** menu, which is what
-a BIOS machine boots. A UEFI machine boots **GRUB2**, which reads
-`GRUB2_DEFAULT_BOOT` and `GRUB2_TIMEOUT` instead. A config carrying only the
-first pair boots a UEFI machine straight past the rescue system and into the
-disk it was meant to rebuild. hangar writes both.
-
-Likewise `auto_recover`, the option that actually starts an unattended restore,
-is added by ReaR only while writing the syslinux menu. On UEFI it has to be put
-on the kernel command line by hand, or the rescue system boots to a login prompt
-and waits forever.
-
-### Restoring over SSH: ReaR removes the key you need
-
-For an SFTP repository the rescue system needs root's private key, and ReaR
-removes it **twice over**:
-
-- `SSH_FILES` defaults to `avoid_sensitive_files`, which copies `authorized_keys`
-  and `known_hosts` and no private keys at all.
-- Even when the key is copied, `build/default/501_check_ssh_keys.sh` deletes any
-  private key that has **no passphrase**, because `SSH_UNPROTECTED_PRIVATE_KEYS`
-  defaults to `no`.
-
-Both defaults are sensible for an image someone might leave in a drawer, and
-neither can be satisfied by an unattended restore — which cannot type a
-passphrase, so the key it needs is necessarily unprotected. hangar sets both for
-SFTP repositories. Without them the recovery stops at a prompt no one can answer:
-
-```
-Running external restore command
-sshd@nas's password:
-```
-
-**The finished rescue image is a credential.** It contains your repository
-password and, for SFTP, a key that can log into your backup server. Treat the
-ISO like the password it carries.
-
-### What a successful drill looks like
-
-```
-Running external restore command
-Finished external restore command
-Running dracut...
-Updated initrd with new drivers for kernel 6.12.0-….x86_64.
-Creating EFI Boot Manager entries...
-Finished 'recover'. The target system is mounted at '/mnt/local'.
-'rear recover' finished successfully
-```
-
-hangar reports **Recovery completed in the drill VM**, quoting the line it
-found, then shuts the guest down and removes it.
-
-`Updated initrd with new drivers` is the line worth looking for. A restore can
-put every file back and still leave a machine that will not boot on its own; an
-initrd rebuilt inside the restored system is what tells you the difference. If
-dracut fails there instead, check that your snapshot really contains
-`/usr/lib/modules` — a restore cannot build an initrd out of modules the backup
-never captured.
-
-Some noise along the way is normal and not failure:
-
-- `/mnt/local/etc/rear/local.conf: FAILED` — ReaR comparing restored files
-  against the rescue system. If you changed the config after your last backup,
-  the restored copy genuinely differs. It is an accurate observation, not an error.
-- `Warning: Unmaintained driver is detected`, `Error: Driver 'pcspkr' is already
-  registered` — virtual hardware noise from the guest.
-
-### A quiet restore is not a stuck restore
-
-restic loads the repository index before it writes anything. Over SFTP that is
-several minutes of small reads with **no output on the console and no growth in
-the disk image** — indistinguishable from a hang if you are watching either one.
-On this hardware it sat at ~950 MB for several minutes, then wrote 47 GB in five
-and a half.
-
-If you want to know whether a drill is alive, watch the guest's network counter
-rather than its disk:
-
-```sh
-sudo virsh domifstat hangar-drill vnet0        # rx_bytes climbing = it is working
-sudo du -h /path/to/hangar-drill.qcow2         # only moves once writing starts
-```
-
-### How long it takes
-
-Restoring ~47 GB over SFTP on a home network ran at about **75 MB/s**, roughly
-ten minutes, inside a 120-minute limit. The layout recreation before it — GPT,
-LVM, four filesystems — takes two to three minutes. Set **Give up after** with
-your own link speed in mind; a timeout mid-restore tells you nothing.
-
-### What has actually been tested
-
-The drill above is not a design. Every step of it has been run end to end on
-real hardware:
-
-| | |
-|---|---|
-| Source machine | 1 TB NVMe, GPT + LVM, XFS on root, /home and /boot, UEFI |
-| Repository | restic over SFTP, on a NAS across a home network |
-| Restored | 48 GB into a rebuilt partition table and volume group |
-| Restore rate | ~86 MB/s to disk, about six minutes |
-| Initrd | rebuilt inside the restored system, for every installed kernel |
-| Bootloader | GRUB2 installed, EFI boot entry created |
-| Verdict | reported automatically, guest shut down, disk removed |
-
-What that does **not** prove: that the restored disk boots on physical hardware
-of a different shape, or that a machine with a layout unlike the one above
-recovers cleanly. Run your own drill. That is the entire point of the feature —
-the only rescue image worth having is one you have watched work.
-
-### Run the drill after every change
-
-A rescue image is only as good as its last test, and the settings that break it
-are exactly the ones that look harmless. Every failure above produced a working
-`local.conf` and an image that booted; the difference only showed up in a VM
-that tried to use them.
-
----
-
 ## Requirements
 
 - Cockpit 300 or newer
@@ -369,21 +142,6 @@ Optional, installed on demand for the features that need them:
 |---|---|
 | `fuse3` | Browsing snapshots in the Logbook |
 | `rclone` | Off-site destinations rclone reaches and restic does not |
-| `rear` | Bare-metal rescue images |
-| `libvirt` | Backing up virtual machines, and the recovery drill |
-
-### A note on virtual machines
-
-Hangar talks to `qemu:///system` as root, so it needs no group membership and is
-unaffected by polkit. If you want to run `virsh` against the system hypervisor
-*yourself*, add your account to the `libvirt` group and log back in:
-
-```sh
-sudo usermod -aG libvirt $USER
-```
-
-Without it, a read-write `virsh -c qemu:///system` command appears to hang — it
-is actually waiting on a polkit prompt that nothing is there to answer.
 
 ### A note for RHEL, CentOS, Rocky and Alma
 
@@ -401,8 +159,8 @@ installation there is a single click.
 ## Installing
 
 ```sh
-git clone https://github.com/<you>/hangar.git
-cd hangar
+git clone https://github.com/Whatevser/hangar-plus.git
+cd hangar-plus
 sudo make install
 sudo systemctl try-restart cockpit
 ```
@@ -449,7 +207,6 @@ retains.
 /etc/hangar/repos/<id>.json      repository definition (never secrets)
 /etc/hangar/repos/<id>.key       repository password, 0600 root:root
 /etc/hangar/jobs/<id>.json       job definition
-/etc/hangar/dr.json              disaster recovery configuration
 /var/lib/hangar/state/<id>.json  last run record, survives reboot
 /run/hangar/mnt/<repo>           transient Logbook mount
 /usr/libexec/hangar/hangar-run   privileged backup runner
@@ -576,23 +333,10 @@ fails — a missing password is not a broken plugin.
 Stated plainly, because a backup tool that oversells itself is worse than one
 that does less.
 
-**Disaster recovery rests on an unsupported path.** Upstream ReaR has no restic
-workflow. Hangar generates a `BACKUP=EXTERNAL` configuration, which ReaR's own
-documentation calls a last resort, and upstream will not support it. This is
-exactly why the recovery drill exists — **build the rescue image and verify it
-before you need it.** An untested rescue image is a guess.
-
 **Backing up a running database's files can produce a backup that will not
 restore.** Hangar warns when a container that looks like a database is backed up
 with consistency `none`, but no warning makes a live copy safe. For databases
 use `stop`, or `command` with a real dump (`mongodump`, `pg_dump`).
-
-**VM quiesce mode `agent` degrades silently.** It needs `qemu-guest-agent`
-running *inside* the guest. Without it the freeze fails and the copy is only
-crash-consistent — and nothing in the guest tells you that.
-
-**`none` quiesce is crash-consistent at best.** It is the fast option, not the
-safe one. Whether that is acceptable depends entirely on what the VM runs.
 
 **One machine.** Hangar manages the host it runs on. Cockpit's host switcher has
 been deprecated and disabled by default since Cockpit 322, for sound security
@@ -605,9 +349,7 @@ aggregation happens in the data rather than in the browser.
 carry rate limits that are not Hangar's to fix. See
 [Per-provider limits](#per-provider-limits).
 
-**restic and rclone are not Red Hat–supported on RHEL.** They live in EPEL. Only
-ReaR ships in RHEL AppStream proper. For a homelab this is irrelevant; for a
-supported production estate it is a procurement question worth asking first.
+**restic and rclone are not Red Hat–supported on RHEL.** They live in EPEL.
 
 **No cross-run analytics.** Hangar has no database, so it can only show what
 systemd and restic can tell it. Once journald rotates, that history is gone.

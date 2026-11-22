@@ -25,7 +25,6 @@
         HangarSecrets: '../core/secrets.js',
         HangarSources: '../core/sources.js',
         HangarSourcesContainer: '../core/sources-container.js',
-        HangarSourcesLibvirt: '../core/sources-libvirt.js',
         HangarRetention: '../core/retention.js',
         HangarSchedule: '../core/schedule.js',
         HangarRestic: '../engine/restic.js',
@@ -83,7 +82,7 @@
 
     // The only wording this screen owns about the source kinds: what to call them
     // in the chooser. Every option *inside* a kind's form — runtimes, consistency
-    // modes, connection URIs, quiesce modes — is read from that kind's exported
+    // modes, consistency settings — is read from that kind's exported
     // table, so a mode added in core/ appears here without an edit.
     const SOURCE_KINDS = [
         {
@@ -97,12 +96,6 @@
             description: 'Named podman or docker volumes, found by asking the runtime ' +
                 'where they live.'
         },
-        {
-            id: 'libvirt',
-            label: 'Virtual machines',
-            description: 'Libvirt domain disk images, with the domain XML that makes ' +
-                'them restorable as a VM.'
-        }
     ];
 
     // Warnings whose subject is whether the backup will RESTORE, rather than
@@ -112,9 +105,6 @@
     // moment of choosing is the last moment anyone can say so.
     const RISK_CODES = [
         'live-database',            // container: mode 'none', and a container looks like a DB
-        'quiesce-crash-consistent', // libvirt:   mode 'none'
-        'quiesce-agent-required',   // libvirt:   mode 'agent', which needs a guest agent
-        'no-xml',                   // libvirt:   disks without the XML are not a VM
         'no-user'                   // container: rootless podman with no owner recorded
     ];
 
@@ -201,7 +191,6 @@
     // looking at.
     function ensureSourceKinds() {
         M('HangarSourcesContainer');
-        M('HangarSourcesLibvirt');
         return M('HangarSources');
     }
 
@@ -220,7 +209,6 @@
     }
 
     function containerModule() { return M('HangarSourcesContainer'); }
-    function libvirtModule() { return M('HangarSourcesLibvirt'); }
 
     function runtimeOptions() {
         const C = containerModule();
@@ -238,20 +226,6 @@
         return consistencyOptions().filter((m) => m.id === str(id))[0] || null;
     }
 
-    function uriOptions() {
-        const L = libvirtModule();
-        return L && Array.isArray(L.URIS) ? L.URIS.slice() : [];
-    }
-
-    function quiesceOptions() {
-        const L = libvirtModule();
-        return L && Array.isArray(L.QUIESCE) ? L.QUIESCE.slice() : [];
-    }
-
-    function quiesceInfo(id) {
-        return quiesceOptions().filter((m) => m.id === str(id))[0] || null;
-    }
-
     function defaultRuntime() {
         const C = containerModule();
         return (C && str(C.DEFAULT_RUNTIME)) || '';
@@ -260,16 +234,6 @@
     function defaultConsistency() {
         const C = containerModule();
         return (C && str(C.DEFAULT_CONSISTENCY)) || '';
-    }
-
-    function defaultUri() {
-        const L = libvirtModule();
-        return (L && str(L.DEFAULT_URI)) || '';
-    }
-
-    function defaultQuiesce() {
-        const L = libvirtModule();
-        return (L && str(L.DEFAULT_QUIESCE)) || '';
     }
 
     // ---------------------------------------------------------------- pure: form
@@ -300,19 +264,6 @@
         };
     }
 
-    function emptyLibvirtFields() {
-        return {
-            uri: defaultUri(),
-            domains: [],
-            domainsText: '',
-            quiesce: defaultQuiesce(),
-            // On by default, and the one default in this form that is a data-safety
-            // decision rather than a convenience: a disk image without its domain
-            // XML restores as a file, not as a VM.
-            includeXml: true
-        };
-    }
-
     function emptyForm() {
         return {
             isNew: true,
@@ -322,7 +273,6 @@
             sourceId: 'main',
             sourceKind: 'filesystem',
             container: emptyContainerFields(),
-            libvirt: emptyLibvirtFields(),
             paths: '',
             excludes: '',
             excludeFile: '',
@@ -482,27 +432,10 @@
         return withSharedFields(source, f);
     }
 
-    function libvirtSource(f) {
-        const v = isObj(f.libvirt) ? f.libvirt : {};
-        const source = {
-            id: sourceId(f),
-            kind: 'libvirt',
-            uri: str(v.uri) || defaultUri(),
-            domains: nameList(v.domains, v.domainsText),
-            quiesce: str(v.quiesce) || defaultQuiesce(),
-            // Written explicitly in both directions: normalize() reads an absent
-            // includeXml as true, so omitting a false would silently turn the XML
-            // back on between saving and running.
-            includeXml: v.includeXml !== false
-        };
-        return withSharedFields(source, f);
-    }
-
     function formSource(form) {
         const f = isObj(form) ? form : {};
         const kind = str(f.sourceKind);
         if (kind === 'container') return containerSource(f);
-        if (kind === 'libvirt') return libvirtSource(f);
         return filesystemSource(f);
     }
 
@@ -541,7 +474,7 @@
     function primaryKind(job) {
         const list = objectSources(job);
         if (list.some(isFilesystem)) return 'filesystem';
-        const first = list.filter((s) => str(s.kind) === 'container' || str(s.kind) === 'libvirt')[0];
+        const first = list.filter((s) => str(s.kind) === 'container')[0];
         return first ? str(first.kind) : 'filesystem';
     }
 
@@ -552,8 +485,7 @@
     }
 
     // "Back up now" runs restic from the browser against a path list. A container
-    // or VM source has no paths until the runtime or the hypervisor is asked, and
-    // needs its containers paused or its guests frozen around the copy — which is
+    // source needs paths from the runtime and may need containers paused — which is
     // hangar-run's job, under the systemd unit's try/finally. So those jobs are
     // handed to the unit instead of being run here with an empty path vector.
     //
@@ -575,16 +507,6 @@
         c.consistency = str(s.consistency) || defaultConsistency();
         c.command = str(s.command);
         return c;
-    }
-
-    function libvirtFieldsFrom(source) {
-        const s = isObj(source) ? source : {};
-        const v = emptyLibvirtFields();
-        v.uri = str(s.uri) || defaultUri();
-        v.domains = splitLines(s.domains);
-        v.quiesce = str(s.quiesce) || defaultQuiesce();
-        v.includeXml = s.includeXml !== false;
-        return v;
     }
 
     function formStateToJob(form) {
@@ -649,8 +571,7 @@
             f.sourceId = str(primary.id) || 'main';
             f.excludes = joinLines(splitLines(primary.excludes));
             f.tags = joinTags(splitTags(primary.tags));
-            if (f.sourceKind === 'container') f.container = containerFieldsFrom(primary);
-            else f.libvirt = libvirtFieldsFrom(primary);
+            f.container = containerFieldsFrom(primary);
         }
 
         const R = M('HangarRetention');
@@ -712,12 +633,6 @@
         if (code === 'bad-user' || code === 'no-user') return 'user';
         if (code === 'no-command' || code.indexOf('command-') === 0) return 'command';
         if (code === 'bad-consistency' || code === 'live-database') return 'consistency';
-
-        // libvirt
-        if (code === 'no-domains' || code.indexOf('domain-') === 0) return 'domains';
-        if (code === 'uri-empty') return 'uri';
-        if (code.indexOf('quiesce-') === 0) return 'quiesce';
-        if (code === 'no-xml') return 'includeXml';
 
         return 'source';
     }
@@ -1789,7 +1704,7 @@
                 return this.startViaUnit(row && row.job);
             },
 
-            // Hands a container or VM job to its systemd unit. Nothing else can do
+            // Hands a container job to its systemd unit. Nothing else can do
             // it correctly: the volume mount points are only knowable by asking the
             // runtime as the owning user, and the pause/freeze around the copy has
             // to be unwound in a try/finally that survives this page being closed.
@@ -1994,13 +1909,13 @@
             submitted: false,
             modes: SCHEDULE_MODES,
             // What the host answered, kept out of the form so it is never saved.
-            discovered: { volumes: [], containers: [], domains: [] },
+            discovered: { volumes: [], containers: [] },
             // Per-list: 'idle' | 'busy' | 'ok' | 'empty' | 'failed', plus why.
-            discovery: { volumes: null, containers: null, domains: null },
+            discovery: { volumes: null, containers: null },
             // The manual fallback. Switched on by a failed or empty discovery, and
             // by the user, but never switched off automatically — a name someone
             // typed must not vanish because a later probe succeeded.
-            manual: { volumes: false, containers: false, domains: false },
+            manual: { volumes: false, containers: false },
             _resolve: null,
 
             init() {
@@ -2015,9 +1930,9 @@
                     this.taken = Array.isArray(detail.taken) ? detail.taken : [];
                     this.submitted = false;
                     this.problems = [];
-                    this.discovered = { volumes: [], containers: [], domains: [] };
-                    this.discovery = { volumes: null, containers: null, domains: null };
-                    this.manual = { volumes: false, containers: false, domains: false };
+                    this.discovered = { volumes: [], containers: [] };
+                    this.discovery = { volumes: null, containers: null };
+                    this.manual = { volumes: false, containers: false };
                     this._resolve = detail.resolve || null;
                     showModal(MODAL_ID);
                     this.discover();
@@ -2045,8 +1960,6 @@
 
             runtimes() { return runtimeOptions(); },
             consistencies() { return consistencyOptions(); },
-            uris() { return uriOptions(); },
-            quiesces() { return quiesceOptions(); },
 
             // The selected mode's own description, shown beside the picker rather
             // than behind a tooltip: the difference between these modes is the
@@ -2055,22 +1968,11 @@
                 return consistencyInfo((this.form.container || {}).consistency);
             },
 
-            quiesceInfo() {
-                return quiesceInfo((this.form.libvirt || {}).quiesce);
-            },
-
             consistencyText() {
                 const m = this.consistencyInfo();
                 return m ? m.description : '';
             },
 
-            quiesceText() {
-                const m = this.quiesceInfo();
-                return m ? m.description : '';
-            },
-
-            // 'high' | 'medium' | 'low' — only the container table carries a risk
-            // rating, so libvirt falls back to the warning list to colour itself.
             consistencyRisk() {
                 const m = this.consistencyInfo();
                 return m && m.risk ? str(m.risk) : '';
@@ -2090,10 +1992,6 @@
 
             containerChoices() {
                 return checkboxList(this.discovered.containers, (this.form.container || {}).containers);
-            },
-
-            domainChoices() {
-                return checkboxList(this.discovered.domains, (this.form.libvirt || {}).domains);
             },
 
             discoveryState(which) {
@@ -2140,7 +2038,6 @@
 
             discover() {
                 if (this.isKind('container')) return this.discoverContainerNames();
-                if (this.isKind('libvirt')) return this.discoverDomains();
                 return Promise.resolve();
             },
 
@@ -2154,23 +2051,8 @@
                 ]);
             },
 
-            discoverDomains() {
-                const L = M('HangarSourcesLibvirt');
-                if (!L) return Promise.resolve();
-                return this._probe('domains',
-                    () => L.listDomains((this.form.libvirt || {}).uri));
-            },
-
-            // The runtime, the owning user and the connection URI all change which
-            // store is being read, so each of them re-asks rather than leaving a
-            // list from the previous one on screen.
             onRuntimeChange() {
                 this.discoverContainerNames();
-                this.revalidate();
-            },
-
-            onUriChange() {
-                this.discoverDomains();
                 this.revalidate();
             },
 
@@ -2343,14 +2225,13 @@
         SCHEDULE_MODES, COUNT_FIELDS, REMEDIATION_LABELS, SCREEN,
         SOURCE_KINDS, RISK_CODES,
         // pure
-        emptyForm, emptyContainerFields, emptyLibvirtFields,
+        emptyForm, emptyContainerFields,
         presetFields, formRetention, presetNameFor, keepsNothing,
         formCalendar, scheduleModeFor, formSource, mergeFilesystemSources,
         primaryKind, primarySource, runsInBrowser,
         nameList, checkboxList, fieldForSourceProblem,
         sourceKinds, sourceKindLabel, ensureSourceKinds,
         runtimeOptions, consistencyOptions, consistencyInfo,
-        uriOptions, quiesceOptions, quiesceInfo,
         sourceProblems, sourceWarnings, riskWarnings, sourceDescription,
         formStateToJob, jobToFormState,
         validateForm, hasErrors, problemsFor, failureTitle, FAILURE_TITLES,

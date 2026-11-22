@@ -136,8 +136,6 @@ function stub() {
             'restic version': 'restic 0.19.1 compiled with go1.26.4 on linux/amd64',
             'rclone --version': 'rclone v1.74.3',
             'fusermount3 --version': 'fusermount3 version: 3.16.2',
-            'rear --version': 'Relax-and-Recover 2.9',
-            'virt-install --version': '4.1.0',
             'unzip -v': 'UnZip 6.00', 'curl --version': 'curl 8.9.1',
             'install -d': '',
             'ls -1 /etc/hangar/repos': Object.keys(REPOS).map((i) => i + '.json').join('\n'),
@@ -246,14 +244,6 @@ async function main() {
         await page.waitForTimeout(600);
         await shot(page, 'logbook', 'scroll back through moments');
 
-        await page.click('.nav-pills .nav-link:text-is("Recovery")');
-        // An untouched form shows nothing but its own validation errors. Pick the
-        // repository the way a user would, so the screenshot shows a recovery
-        // that is actually configured.
-        await page.selectOption('#hangar-dr-repo', 'attic');
-        await page.fill('#hangar-dr-host', 'db01');
-        await shot(page, 'recovery', 'bare-metal rescue image');
-
         await page.click('.nav-pills .nav-link:text-is("Settings")');
         await shot(page, 'settings', 'themes and diagnostics');
 
@@ -295,38 +285,6 @@ async function main() {
         if (await clickVisible(page, 'button:has-text("Edit")')) {
             await page.waitForTimeout(700);
             await shot(page, 'job-edit', 'what to back up, when, and for how long');
-            await page.keyboard.press('Escape');
-            await page.waitForTimeout(400);
-        }
-
-        // The drill: the numbers here are the whole lesson of the recovery
-        // section — the disk must match the ORIGINAL disk, and must be created
-        // somewhere with room for a full restore.
-        //
-        // Its button is disabled until an image exists and libvirt answers,
-        // neither of which is true for a stub, so both are seeded the same way
-        // the password dialog is.
-        await page.click('.nav-pills .nav-link:text-is("Recovery")');
-        await page.waitForTimeout(500);
-        await page.evaluate(() => {
-            const el = [...document.querySelectorAll('[x-data]')]
-                .find((e) => /hangarRecoveryUi/.test(e.getAttribute('x-data') || ''));
-            const d = el && window.Alpine && window.Alpine.$data(el);
-            if (d) {
-                d.iso = '/var/lib/rear/output/rear-db01.iso';
-                d.libvirt = { checked: true, available: true };
-            }
-        });
-        await page.waitForTimeout(400);
-        if (await clickVisible(page, 'button:has-text("Verify recovery")')) {
-            await page.waitForTimeout(700);
-            await fill(page, '#hangar-drill-disk', '1000');
-            await fill(page, '#hangar-drill-diskdir', '/srv/drill');
-            await fill(page, '#hangar-drill-sysgb', '45');
-            await fill(page, '#hangar-drill-wait', '120');
-            const fw = await page.$('#hangar-drill-fw');
-            if (fw) await fw.selectOption('uefi');
-            await shot(page, 'drill', 'the throwaway VM that proves recovery works');
             await page.keyboard.press('Escape');
             await page.waitForTimeout(400);
         }

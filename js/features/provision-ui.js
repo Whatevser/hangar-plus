@@ -44,16 +44,10 @@
     // Why the user should care, in their words rather than the package's. Kept
     // here and not in core/provision.js because core's `reason` fields are
     // one-line developer notes, and these are the sentences on screen.
-    //
-    // libvirt is listed although core does not yet plan it: the recovery drill
-    // boots the rescue image in a throwaway VM, and when that tool joins
-    // REQUIREMENTS this table already has its sentence.
     const REASONS = {
         restic: 'The backup engine. Hangar cannot back anything up without it.',
         fuse3: 'Lets the Logbook mount a snapshot and browse it as an ordinary file tree. Without it the Logbook still works, but falls back to listing files instead of mounting them.',
         rclone: 'Adds off-site destinations — anything an existing rclone remote can reach.',
-        rear: 'Builds the bootable rescue image used for bare-metal recovery.',
-        libvirt: 'Runs the recovery drill: boots the rescue image in a throwaway virtual machine to prove it actually recovers.'
     };
 
     function toolNameOf(step) {

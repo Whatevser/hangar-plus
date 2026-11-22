@@ -280,9 +280,9 @@ test('detectFamily accepts an already-parsed os-release object', () => {
 
 test('REQUIREMENTS covers exactly the managed tools, in install order', () => {
     assert.deepEqual(P.TOOLS,
-        ['restic', 'rclone', 'fuse3', 'rear', 'libvirt', 'unzip', 'curl']);
+        ['restic', 'rclone', 'fuse3']);
     assert.deepEqual(Object.keys(P.REQUIREMENTS).sort(),
-        ['curl', 'fuse3', 'libvirt', 'rclone', 'rear', 'restic', 'unzip']);
+        ['fuse3', 'rclone', 'restic']);
 });
 
 test('REQUIREMENTS names a package for every family, and restic alone is mandatory', () => {
@@ -295,7 +295,6 @@ test('REQUIREMENTS names a package for every family, and restic alone is mandato
     assert.equal(P.REQUIREMENTS.restic.optional, false);
     assert.equal(P.REQUIREMENTS.rclone.optional, true);
     assert.equal(P.REQUIREMENTS.fuse3.optional, true);
-    assert.equal(P.REQUIREMENTS.rear.optional, true);
 });
 
 test('restic\'s minimum is the version that introduced exit codes 10 and 11', () => {
@@ -319,7 +318,6 @@ test('packagesFor returns a copy, so callers cannot mutate the table', () => {
 });
 
 test('packagesFor returns an empty list for rear on arch and for unknown families', () => {
-    assert.deepEqual(P.packagesFor('rear', 'arch'), []);
     assert.deepEqual(P.packagesFor('restic', 'unknown'), []);
 });
 
@@ -350,8 +348,8 @@ test('planFor gives restic no fallback on the families that ship it themselves',
 });
 
 test('planFor keeps the install order regardless of the order asked for', () => {
-    const plan = P.planFor(['rear', 'fuse3', 'restic'], 'debian');
-    assert.deepEqual(plan.map((s) => s.tool), ['restic', 'fuse3', 'rear']);
+    const plan = P.planFor(['fuse3', 'restic'], 'debian');
+    assert.deepEqual(plan.map((s) => s.tool), ['restic', 'fuse3']);
 });
 
 test('planFor de-duplicates and drops unknown tools rather than guessing', () => {
@@ -366,7 +364,6 @@ test('planFor falls back to the static binary when the family is unknown', () =>
 
 test('planFor reports fuse3 and rear as unavailable when nothing can install them', () => {
     assert.equal(P.planFor(['fuse3'], 'unknown')[0].method, 'unavailable');
-    assert.equal(P.planFor(['rear'], 'arch')[0].method, 'unavailable');
 });
 
 test('planFor returns an empty plan for empty, null and non-array input', () => {
@@ -381,8 +378,8 @@ test('planFor accepts a bare tool name and probe-result objects', () => {
 });
 
 test('planFor marks optional tools as optional', () => {
-    const plan = P.planFor(['restic', 'rclone', 'fuse3', 'rear'], 'suse');
-    assert.deepEqual(plan.map((s) => s.optional), [false, true, true, true]);
+    const plan = P.planFor(['restic', 'rclone', 'fuse3'], 'suse');
+    assert.deepEqual(plan.map((s) => s.optional), [false, true, true]);
 });
 
 // ---------------------------------------------------------------- describeStep
@@ -396,7 +393,7 @@ test('describeStep mentions the fallback only when there is one', () => {
 });
 
 test('describeStep says so when a tool cannot be installed at all', () => {
-    assert.match(P.describeStep(P.planFor(['rear'], 'arch')[0]), /manually/);
+    assert.match(P.describeStep(P.planFor(['fuse3'], 'unknown')[0]), /manually/);
     assert.equal(P.describeStep(null), 'Nothing to install.');
 });
 
@@ -490,7 +487,7 @@ test('evaluateProbe rejects a restic below the minimum but still calls it presen
 
 test('evaluateProbe accepts any version of a tool with no minimum', () => {
     assert.equal(P.evaluateProbe('rclone', 'rclone v1.50.0').ok, true);
-    assert.equal(P.evaluateProbe('rear', 'Relax-and-Recover 2.6 / 2020-06-17').ok, true);
+    assert.equal(P.evaluateProbe('fuse3', 'Relax-and-Recover 2.6 / 2020-06-17').ok, true);
 });
 
 test('evaluateProbe treats unreadable output as present but not ok when a minimum exists', () => {
@@ -506,12 +503,12 @@ test('evaluateProbe throws a typed error for an unknown tool', () => {
 
 test('missingFrom lists absent and too-old tools in install order', () => {
     const results = [
-        { tool: 'rear', present: false, ok: false },
+        { tool: 'fuse3', present: false, ok: false },
         { tool: 'rclone', present: true, ok: true },
         { tool: 'restic', present: true, ok: false },
         { tool: 'fuse3', present: true, ok: true }
     ];
-    assert.deepEqual(P.missingFrom(results), ['restic', 'rear']);
+    assert.deepEqual(P.missingFrom(results), ['restic', 'fuse3']);
 });
 
 test('missingFrom ignores unknown tools and non-array input', () => {
@@ -609,7 +606,7 @@ test('resolvePackages rejects with a typed error when cockpit is missing', async
 });
 
 test('installStep refuses a step that is not a package-manager step', async () => {
-    const step = P.planFor(['rear'], 'arch')[0];
+    const step = P.planFor(['fuse3'], 'unknown')[0];
     await assert.rejects(P.installStep(step), (e) => {
         assert.equal(e.kind, Errors.KIND.GENERIC);
         return true;
@@ -1005,7 +1002,7 @@ test('describeStep produces one finished sentence for every step of every plan',
 
 test('describeStep names the tool when only a static binary is left', () => {
     assert.match(P.describeStep(P.planFor(['rclone'], 'unknown')[0]), /rclone/);
-    assert.match(P.describeStep(P.planFor(['rear'], 'arch')[0]), /rear/);
+    assert.match(P.describeStep(P.planFor(['fuse3'], 'unknown')[0]), /fuse3/);
 });
 
 // ---------------------------------------------------------------- normalizeArch
@@ -1405,7 +1402,7 @@ test('installStep ignores resolved packages that carry no package id', async () 
 test('installStep refuses every step the package manager cannot act on', async () => {
     const pk = pkStub({});
     await withCockpit(pk.cockpit, async () => {
-        const steps = [P.planFor(['restic'], 'unknown')[0], P.planFor(['rear'], 'arch')[0],
+        const steps = [P.planFor(['restic'], 'unknown')[0], P.planFor(['fuse3'], 'unknown')[0],
             null, undefined, {}, { method: 'packagekit', packages: 'restic' }];
         for (const step of steps) {
             const outcome = await P.installStep(step).then(() => null, (e) => e);
@@ -1571,15 +1568,13 @@ test('on RHEL the direct route enables EPEL first', () => {
 });
 
 test('EPEL is not mentioned when nothing missing actually needs it', () => {
-    const i = P.manualInstructions('rhel', ['fuse3', 'unzip']);
+    const i = P.manualInstructions('rhel', ['fuse3']);
     assert.equal(i.needsEpel, false);
-    assert.deepEqual(i.directCommands, ['sudo dnf install -y fuse3 unzip']);
+    assert.deepEqual(i.directCommands, ['sudo dnf install -y fuse3']);
 });
 
-test('manualInstructions maps tools to this distribution package names', () => {
-    // virt-install is 'virtinst' on Debian — the classic cross-distro mistake.
-    assert.ok(P.manualInstructions('debian', ['libvirt']).packages.includes('virtinst'));
-    assert.ok(P.manualInstructions('rhel', ['libvirt']).packages.includes('virt-install'));
+test('manualInstructions maps tools to distribution packages', () => {
+    assert.deepEqual(P.manualInstructions('debian', ['fuse3']).packages, ['fuse3']);
 });
 
 test('manualInstructions is honest about an unrecognised distribution', () => {

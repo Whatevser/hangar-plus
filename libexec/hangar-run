@@ -44,15 +44,6 @@ STATE_DIR = os.environ.get("HANGAR_STATE_DIR", "/var/lib/hangar/state")
 # to whatever environment happens to be around.
 RESTIC_CACHE_DIR = os.environ.get("HANGAR_CACHE_DIR", "/var/cache/hangar/restic")
 
-# Where dumped libvirt domain XML is staged before restic picks it up. Under
-# /var/lib rather than /etc because it is regenerated on every run and is not
-# configuration. Mirrors XML_DIR in js/core/sources-libvirt.js.
-LIBVIRT_XML_DIR = os.environ.get("HANGAR_LIBVIRT_XML_DIR", "/var/lib/hangar/libvirt")
-
-# Deadline for the short helper commands (volume inspect, virsh). libvirtd wedges
-# rather than refusing — qemu:///system times out outright on some hosts — and a
-# backup unit that hangs forever is invisible to the operator in a way a failed
-# one is not. 20s mirrors TIMEOUT_MS in js/core/sources-libvirt.js.
 CMD_TIMEOUT = float(os.environ.get("HANGAR_CMD_TIMEOUT", "20"))
 
 # restic exit codes we care about (see docs/CONVENTIONS.md).
@@ -200,7 +191,7 @@ def classify_run(code, stderr_text):
 
 # ---- source-kind vocabulary -------------------------------------------------
 #
-# These mirror js/core/sources-container.js and js/core/sources-libvirt.js. The
+# These mirror js/core/sources-container.js. The
 # JavaScript decides what a source *means*; this helper only has to agree with
 # it, and tests/integration/hangar-run-sources.test.js is what keeps the two
 # copies from drifting.
@@ -238,22 +229,11 @@ NUL = "\x00"
 DATABASE_HINTS = ("mongo", "postgres", "mysql", "mariadb", "redis",
                   "elastic", "kafka", "cassandra", "clickhouse")
 
-LIBVIRT_QUIESCE = ("none", "agent", "shutdown")
-DEFAULT_URI = "qemu:///system"
 
 # Job and repository ids name files under CONF_DIR. Same rule as ID_RE in
 # js/core/sources.js, and \Z for the same reason NAME_RE uses it.
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
-# Same rejection set as UNSAFE_DOMAIN_RE in js/core/sources-libvirt.js. A domain
-# name also becomes a file name under LIBVIRT_XML_DIR, hence '/' as well.
-UNSAFE_DOMAIN_RE = re.compile(r"[;&|<>`$(){}\[\]*?!~\"'\\/\x00-\x1f\x7f]")
-
-# What a disk source has to look like before it can be handed to restic: an
-# absolute path, or a scheme for a network disk (rbd:, nbd:, nvme:). Anything
-# else is virsh diagnostics on stdout, and treating it as a path is how "error:
-# failed to get domain" becomes a positional argument.
-DISK_SOURCE_RE = re.compile(r"^(?:/|[A-Za-z][A-Za-z0-9+.-]*:)")
 
 
 def log(level, msg, **fields):
@@ -455,13 +435,8 @@ def last_line(text):
     return lines[-1] if lines else ""
 
 
-def step(sid, argv, capture=None):
-    """One pre- or post-backup command.
-
-    `capture` names a file that the command's stdout is written to — that is how
-    `virsh dumpxml` becomes a file restic can back up without a shell redirect.
-    """
-    return {"source": sid, "argv": list(argv), "capture": capture}
+def step(sid, argv):
+    return {"source": sid, "argv": list(argv)}
 
 
 def run_capture(argv, env=None):
@@ -714,144 +689,12 @@ def container_source(src, sid):
     }
 
 
-# ---- libvirt sources --------------------------------------------------------
-
-
-def virsh_argv(uri, args):
-    return ["virsh", "-c", uri] + list(args)
-
-
-def parse_blklist(text):
-    """Rows of `virsh domblklist --details`.
-
-    Two shapes are dropped here rather than downstream, because both would make
-    `restic backup` fail on a path that does not exist:
-      * source '-'    — an empty drive (a CD-ROM with no medium) has no file;
-      * device cdrom  — an attached ISO is installation media, not VM state, and
-                        is routinely deleted once the guest is installed.
-    Source is the last column and may contain spaces, so the split is bounded at
-    three separators rather than done blindly.
-    """
-    rows = []
-    for raw in (text or "").splitlines():
-        line = raw.strip()
-        if line == "" or (re.match(r"^[-\s]+$", line) and "-" in line):
-            continue
-        m = re.match(r"^(\S+)\s+(\S+)\s+(\S+)\s+(\S[\s\S]*)$", line)
-        if not m:
-            continue
-        typ, device, target, source = m.group(1), m.group(2), m.group(3), m.group(4).strip()
-        if (typ.lower(), device.lower(), target.lower()) == ("type", "device", "target"):
-            continue
-        if device.lower() == "cdrom":
-            continue
-        if source == "-" or not DISK_SOURCE_RE.match(source):
-            continue
-        rows.append({"type": typ, "device": device, "target": target, "source": source})
-    return rows
-
-
-def resolve_domain_disks(uri, domain, sid):
-    # LC_ALL=C because domblklist's column titles are translated, and a header
-    # row we fail to recognise would be parsed as a disk called "Ziel".
-    env = dict(os.environ)
-    env["LC_ALL"] = "C"
-    code, out, err = run_capture(virsh_argv(uri, ["domblklist", "--details", domain]), env)
-    if code != 0:
-        # Degrade with a report, never a hang: on hosts where qemu:///system is
-        # wedged this is the only thing standing between the operator and a unit
-        # that never finishes.
-        die(1, "could not list domain disks", source=sid, domain=domain, uri=uri,
-            exit_code=code, error=last_line(err))
-    return [row["source"] for row in parse_blklist(out)]
-
-
-def libvirt_source(src, sid):
-    uri = src.get("uri") or DEFAULT_URI
-    if not isinstance(uri, str) or uri.strip() == "" or NUL in uri:
-        die(1, "libvirt source needs a connection URI", source=sid)
-
-    domains = sorted(dedupe(str_list(src.get("domains"), "domains", sid)))
-    if not domains:
-        die(1, "libvirt source lists no domains", source=sid)
-    for d in domains:
-        # A leading dash would be read as an option by virsh rather than as the
-        # domain it names; the rest of the set would escape LIBVIRT_XML_DIR or
-        # change the meaning of a command line.
-        if d.startswith("-") or UNSAFE_DOMAIN_RE.search(d):
-            die(1, "unsafe domain name", source=sid, domain=d)
-
-    quiesce = src.get("quiesce") or "none"
-    if quiesce not in LIBVIRT_QUIESCE:
-        die(1, "unknown quiesce mode", source=sid, quiesce=str(quiesce),
-            known=list(LIBVIRT_QUIESCE))
-
-    # Absent means true: a disk image without its domain XML is not a restorable
-    # VM, it is a file that happens to contain a filesystem.
-    include_xml = True if src.get("includeXml") is None else bool(src.get("includeXml"))
-
-    warnings = []
-    if quiesce == "none":
-        warn(warnings, sid, "quiesce-crash-consistent",
-             "disks are copied while the VM runs, so the image is crash-consistent "
-             "at best — the restored guest sees it as if the power was cut",
-             quiesce=quiesce)
-    elif quiesce == "agent":
-        # Fails open on purpose: domfsfreeze errors when the agent is absent, and
-        # a run that degrades to a live copy while claiming to be consistent is
-        # the worst of both worlds. The pre-step failure would abort the backup,
-        # but the operator should know the dependency before that happens.
-        warn(warnings, sid, "quiesce-agent-required",
-             "freezing needs qemu-guest-agent running inside the guest; without "
-             "it the freeze fails and the copy is only crash-consistent",
-             quiesce=quiesce)
-    if not include_xml:
-        warn(warnings, sid, "no-xml",
-             "the domain XML is not included, so the disk images restore as files "
-             "rather than as a VM that can be started",
-             includeXml=False)
-
-    disks = []
-    for d in domains:
-        disks.extend(resolve_domain_disks(uri, d, sid))
-    # Two disks can share a backing file (a data disk attached to two domains),
-    # and restic would otherwise store the same tree twice.
-    disks = sorted(dedupe(disks))
-
-    pre, xml_paths = [], []
-    if include_xml:
-        for d in domains:
-            path = os.path.join(LIBVIRT_XML_DIR, d + ".xml")
-            xml_paths.append(path)
-            pre.append(step(sid, virsh_argv(uri, ["dumpxml", d]), capture=path))
-    xml_paths.sort()
-
-    post = []
-    if quiesce == "agent":
-        pre.extend(step(sid, virsh_argv(uri, ["domfsfreeze", d])) for d in domains)
-        post = [step(sid, virsh_argv(uri, ["domfsthaw", d])) for d in reversed(domains)]
-    elif quiesce == "shutdown":
-        pre.extend(step(sid, virsh_argv(uri, ["shutdown", d])) for d in domains)
-        post = [step(sid, virsh_argv(uri, ["start", d])) for d in reversed(domains)]
-
-    flags = restic_flags(src, sid)
-
-    return {
-        "id": sid, "kind": "libvirt", "uri": uri, "quiesce": quiesce,
-        "domains": domains, "includeXml": include_xml, "xml": xml_paths,
-        # Disks before XML: a reader of `journalctl` sees the payload first and
-        # the metadata after it.
-        "paths": disks + xml_paths, "flags": flags, "pre": pre, "post": post,
-        "warnings": warnings,
-    }
-
 
 # ---- dispatch ---------------------------------------------------------------
 
 SOURCE_KINDS = {
     "filesystem": filesystem_source,
     "container": container_source,
-    "libvirt": libvirt_source,
 }
 
 
@@ -869,6 +712,33 @@ def build_sources(sources):
                 known=sorted(SOURCE_KINDS))
         out.append(build(src, src.get("id") or ("source-%d" % index)))
     return out
+
+
+def manual_retention(job):
+    policy = job.get("retention")
+    return isinstance(policy, dict) and policy.get("disabled") is True
+
+
+def repository_keeps_all(job):
+    # Both pruning mechanisms can delete snapshots from other jobs. Older
+    # snapshots have no job identifier, so protect the whole repository.
+    if manual_retention(job):
+        return True
+    try:
+        with os.scandir(os.path.join(CONF_DIR, "jobs")) as entries:
+            for entry in entries:
+                if not entry.name.endswith(".json"):
+                    continue
+                with open(entry.path, encoding="utf-8") as f:
+                    other = json.load(f)
+                if not isinstance(other, dict):
+                    raise ValueError("invalid job file: " + entry.name)
+                if other.get("repo") == job.get("repo") and manual_retention(other):
+                    return True
+    except (ValueError, OSError) as e:
+        log("warning", "skipping pruning: could not verify job policies", error=str(e))
+        return True
+    return False
 
 
 def retention_args(policy):
@@ -1358,15 +1228,16 @@ def build_plan(job, repo):
         "backup": backup, "forget": None, "guard": None, "env": backend_env(repo),
         "sources": sources, "pre": pre, "post": post, "warnings": warnings,
     }
-    ret = retention_args(job.get("retention"))
-    if ret:
+    keep_all = repository_keeps_all(job)
+    ret = [] if manual_retention(job) else retention_args(job.get("retention"))
+    if ret and not keep_all:
         # One command, not two. `forget` takes an EXCLUSIVE lock of its own —
         # measured, after splitting it from --prune on the assumption that it
         # did not — so separating them only creates a second operation that can
         # be blocked by the same thing.
         plan["forget"] = base + ["forget", "--json", "--prune"] + ret
 
-    guard = guard_config(repo, warnings)
+    guard = None if keep_all else guard_config(repo, warnings)
     if guard:
         # --mode raw-data, always. The default (restore-size) sums the sizes of
         # restored files: a real 2.0 MB repository measures 5.9 MB that way, and a
@@ -1390,8 +1261,6 @@ def build_plan(job, repo):
             check_argv(plan["guard"][key], "guard-" + key)
     for st in pre + post:
         check_argv(st["argv"], "step", source=st.get("source"))
-        if st.get("capture") is not None:
-            check_argv([st["capture"]], "capture", source=st.get("source"))
     return plan
 
 
@@ -1413,17 +1282,10 @@ def run_step(st, env):
     Steps are argv vectors, never shell strings — every element came from a
     validated name or from a path the runtime itself reported.
     """
-    argv, capture = st["argv"], st.get("capture")
-    log("info", "running source step", source=st.get("source"), argv=argv, capture=capture)
+    argv = st["argv"]
+    log("info", "running source step", source=st.get("source"), argv=argv)
     try:
-        if capture:
-            os.makedirs(os.path.dirname(capture), mode=0o750, exist_ok=True)
-            with open(capture, "w", encoding="utf-8") as fh:
-                res = subprocess.run(argv, env=env, stdout=fh, stderr=subprocess.PIPE,
-                                     text=True, timeout=CMD_TIMEOUT)
-        else:
-            res = subprocess.run(argv, env=env, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE, text=True, timeout=CMD_TIMEOUT)
+        res = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=CMD_TIMEOUT)
     except subprocess.TimeoutExpired:
         return 124, "no answer within %gs" % CMD_TIMEOUT
     except FileNotFoundError:
@@ -1455,8 +1317,7 @@ def run_post_steps(steps, env):
     """Run every post step, whatever happened, and report how many failed.
 
     Never aborts on the first failure: the steps still queued are the ones that
-    restart the remaining containers. A container left stopped, or a VM left
-    frozen, because a backup errored is a worse outcome than a failed backup.
+    restart the remaining containers. A container left stopped because a backup errored is a worse outcome than a failed backup.
     """
     failed = 0
     for st in steps:
@@ -1464,7 +1325,7 @@ def run_post_steps(steps, env):
             code, message = run_step(st, env)
         except Exception as e:              # noqa: BLE001 — deliberately total
             # The steps still queued are the ones that start the remaining
-            # containers and thaw the remaining guests. Whatever one step manages
+            # containers. Whatever one step manages
             # to raise, it must not take the rest of the unwind down with it.
             code, message = 1, "%s: %s" % (type(e).__name__, e)
         if code != 0:
@@ -1489,7 +1350,7 @@ def install_signal_handlers():
     a unit that overruns TimeoutStartSec, and a host shutdown during a nightly
     run all deliver SIGTERM. Python's default disposition for SIGTERM kills the
     process outright — no `finally`, so the containers that were stopped for the
-    copy are never started again and the frozen guests are never thawed. That is
+    copy are never started again. That is
     precisely the outcome this design calls worse than a failed backup, and it is
     reachable by an operator typing a perfectly ordinary command.
 
@@ -1629,8 +1490,7 @@ def stream_restic(argv, env, label):
         )
     except (OSError, ValueError) as e:
         # restic not installed is the usual one. A returned code rather than a
-        # raise, so the caller's `finally` stays in charge of the unwind: a VM
-        # frozen for a backup that could not start must still be thawed, and a
+        # raise, so the caller's `finally` stays in charge of the unwind. A
         # traceback out of here would be reported as a crash instead of a
         # failure with a reason.
         log("error", "could not start restic", label=label, error=str(e))
@@ -1712,7 +1572,7 @@ def run_reader(argv, env):
     """Run a restic command that answers with one JSON document; return (code, stdout, stderr).
 
     Deliberately NOT bounded by CMD_TIMEOUT. That deadline exists for `volume
-    inspect` and `virsh`, which answer in milliseconds or are wedged; `stats` and
+    inspect`, which answers in milliseconds or times out; `stats` and
     `snapshots` legitimately take minutes on a large remote repository — exactly the
     repositories a size limit is set on — and killing them at 20s would report
     "size could not be measured" on every one of them.
@@ -2066,12 +1926,11 @@ def main(argv):
     run_hook("pre", hooks.get("pre"), env)
 
     # Installed here rather than at import: --print-plan must stay a pure dry run,
-    # and nothing before this point has changed the state of a container or a VM.
+    # and nothing before this point has changed the state of a container.
     install_signal_handlers()
 
     # try/finally, not sequence: whether the pre steps fail, the backup fails or
-    # restic is killed outright, the containers still have to be started again
-    # and the guests still have to be thawed.
+    # restic is killed outright, the containers still have to be started again.
     post_failures = 0
     interrupted = None
     try:
@@ -2124,6 +1983,10 @@ def main(argv):
         "unreadable": len(errors),
         "post_failures": post_failures,
     }
+
+    # The retention setting may have changed during a long backup.
+    if (plan["forget"] or plan["guard"]) and repository_keeps_all(job):
+        plan["forget"] = plan["guard"] = None
 
     if plan["forget"]:
         fcode, _fsummary, _ferrors, fstderr = forget_with_lock_retry(plan["forget"], env, repo_id)

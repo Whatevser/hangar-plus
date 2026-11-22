@@ -373,11 +373,6 @@ ok('no literal control bytes in shipped source');
 
     const engineDir = /CACHE_DIR\s*=\s*'([^']+)'/.exec(engine);
     const logbookDir = /RESTIC_CACHE_DIR\s*=\s*'([^']+)'/.exec(logbook);
-    // dr.js builds the argv ReaR runs; it needs the same path for the backup leg.
-    const drDir = /RESTIC_CACHE_DIR\s*=\s*'([^']+)'/.exec(read('js/core/dr.js'));
-    if (!drDir) fail('js/core/dr.js no longer defines RESTIC_CACHE_DIR');
-    else if (engineDir && drDir[1] !== engineDir[1])
-        fail(`js/core/dr.js caches in ${drDir[1]}, the engine in ${engineDir[1]}`);
     const runnerDir = /RESTIC_CACHE_DIR\s*=\s*os\.environ\.get\("HANGAR_CACHE_DIR",\s*"([^"]+)"\)/.exec(runner);
 
     if (!engineDir) fail('js/engine/restic.js no longer defines CACHE_DIR');

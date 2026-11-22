@@ -41,7 +41,6 @@ test('path builders produce the documented layout', () => {
     assert.equal(C.jobPath('nightly'), '/etc/hangar/jobs/nightly.json');
     assert.equal(C.statePath('nightly'), '/var/lib/hangar/state/nightly.json');
     assert.equal(C.globalPath(), '/etc/hangar/config.json');
-    assert.equal(C.drPath(), '/etc/hangar/dr.json');
 });
 
 test('path builders inherit the id guard', () => {

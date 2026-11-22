@@ -11,22 +11,11 @@
         { id: 'repos',     label: 'Repositories' },
         { id: 'jobs',      label: 'Jobs' },
         { id: 'logbook',   label: 'Logbook' },
-        { id: 'recovery',  label: 'Recovery' },
         { id: 'settings',  label: 'Settings' }
     ];
 
     function hangarApp() {
-        // Self-update state and methods are spread in rather than nested, so the
-        // version badge in index.html can bind to `update`/`installedVersion`
-        // directly on the root component.
-        const updateUi = (root.hangarUpdateUi ? root.hangarUpdateUi() : {
-            update: { available: false, version: '', checking: false, error: '' },
-            installedVersion: '',
-            async initUpdate() {},
-            openUpdateModal() { return false; }
-        });
-
-        return Object.assign({}, updateUi, {
+        return {
             tabs: TABS,
             tab: 'overview',
             ready: false,
@@ -171,12 +160,6 @@
                     if (to && TABS.some(function (t) { return t.id === to; })) this.tab = to;
                 });
 
-                // Deliberately after the prerequisite probe and never blocking on it:
-                // an unreachable GitHub must not stop the plugin rendering.
-                try {
-                    await this.initUpdate(this.settings);
-                } catch (e) { /* the badge simply stays hidden */ }
-
                 this.ready = true;
 
                 // Deep-link support: cockpit passes the fragment through, so
@@ -219,7 +202,7 @@
             openProvision() {
                 root.dispatchEvent(new CustomEvent('hangar:provision', { detail: this.missing }));
             }
-        });
+        };
     }
 
     // --- generic modals ---------------------------------------------------
