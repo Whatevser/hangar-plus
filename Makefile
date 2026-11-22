@@ -16,7 +16,7 @@ export RELEASE_NOTES
 # COVERAGE.html and coverage/ are deliberately absent: they describe how the plugin
 # was tested, which is a fact about this repository and no business of an
 # installed copy.
-FILES = manifest.json index.html README.md CHANGELOG.md VERSION Makefile css js html screenshots libexec
+FILES = manifest.json index.html README.md CHANGELOG.md VERSION Makefile css js html screenshots libexec systemd
 
 # Coverage is measured over the shipped browser sources only. tests/ is excluded
 # because a test file's own coverage says nothing, and libexec/hangar-run is
@@ -113,7 +113,10 @@ install:
 	@find $(INSTALL_DIR) -name __pycache__ -type d -prune -exec rm -rf {} +
 	@rm -rf $(INSTALL_DIR)/COVERAGE.html $(INSTALL_DIR)/coverage
 	install -d $(LIBEXEC)
-	@if [ -f libexec/hangar-run ]; then install -m 0755 libexec/hangar-run $(LIBEXEC)/hangar-run; fi
+	@for f in hangar-run hangar-portable hangar-update; do if [ -f libexec/$f ]; then install -m 0755 libexec/$f $(LIBEXEC)/$f; fi; done
+	install -m 0644 systemd/hangar-auto-update.service /etc/systemd/system/hangar-auto-update.service
+	install -m 0644 systemd/hangar-auto-update.timer /etc/systemd/system/hangar-auto-update.timer
+	@systemctl daemon-reload
 	install -d -m 0755 $(SYSCONF)
 	install -d -m 0700 $(SYSCONF)/repos
 	# restic finds its cache from $$XDG_CACHE_HOME or $$HOME, and the systemd units
@@ -123,11 +126,15 @@ install:
 	install -d -m 0700 $(CACHE_DIR)
 	install -d -m 0755 $(SYSCONF)/jobs
 	printf '%s\n' "$(VERSION)" > $(SYSCONF)/installed-version
+	@if git rev-parse HEAD >/dev/null 2>&1; then git rev-parse HEAD > $(SYSCONF)/installed-commit; fi
 	@echo "Installed hangar $(VERSION) to $(INSTALL_DIR)"
 	@echo "Restart Cockpit with: systemctl try-restart cockpit"
 
 uninstall:
-	@if [ "$$(id -u)" != "0" ]; then echo "uninstall requires root (use sudo)"; exit 1; fi
+	@if [ "$(id -u)" != "0" ]; then echo "uninstall requires root (use sudo)"; exit 1; fi
+	@systemctl disable --now hangar-auto-update.timer 2>/dev/null || true
+	rm -f /etc/systemd/system/hangar-auto-update.service /etc/systemd/system/hangar-auto-update.timer
+	@systemctl daemon-reload
 	rm -rf $(INSTALL_DIR)
 	rm -rf $(CACHE_DIR)
 	rm -rf $(LIBEXEC)
