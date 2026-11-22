@@ -2253,6 +2253,7 @@ test('the import dialog locks its backend to local and uses a distinct submit la
     c.receive({ mode: 'import', form: { id: 'old', kind: 's3', path: '/backup' }, existingIds: [] });
     assert.equal(c.mode, 'import');
     assert.equal(c.kind, 'local');
+    assert.equal(c.fields().find((field) => field.name === 'path').browse, 'dir');
     c.setKind('rclone');
     assert.equal(c.kind, 'local');
     assert.match(MODAL, /mode === 'import'.*'Import repository'/);
