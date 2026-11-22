@@ -65,8 +65,9 @@ def check_host(kernel, output):
             fail("Missing " + exe + ". Install restic, initramfs-tools, "
                  "squashfs-tools, xorriso and grub-common.")
     if not Path("/usr/share/initramfs-tools/scripts/live").is_file():
-        fail("live-boot initramfs support is missing. Install live-boot "
-             "and live-boot-initramfs-tools before building.")
+        fail("live-boot initramfs support is missing. Build only in a disposable "
+             "test environment with the live-boot packages present. Installing "
+             "live-boot-initramfs-tools on a production OS is not recommended.")
     if not Path("/usr/lib/grub/x86_64-efi").is_dir():
         fail("GRUB x86_64 EFI modules missing. Install grub-efi-amd64-bin and mtools.")
     if not Path("/usr/lib/grub/i386-pc").is_dir():
