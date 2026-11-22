@@ -162,7 +162,11 @@ def publish_iso(stage, output):
         except BaseException:
             output.unlink(missing_ok=True)
             raise
-    output.chmod(0o600)
+    try:
+        output.chmod(0o600)
+    except OSError:
+        print("Warning: destination filesystem cannot enforce private ISO permissions.",
+              file=sys.stderr)
 
 
 def build(repo, password, snapshot, output, kernel=None):
