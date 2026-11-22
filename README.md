@@ -45,6 +45,48 @@ for the selected snapshot. It requires `xorriso`, plus free space for the
 temporary restored files and the finished ISO. It is not a clone of the
 encrypted restic repository, and it cannot preserve all Linux metadata.
 
+
+**Experimental Live ISO (test)** is separate from the existing data ISO.
+It restores a complete **x86_64 Debian/Ubuntu/Linux Mint system snapshot** into
+temporary private storage, builds `live/filesystem.squashfs`, generates a
+**fresh live-boot initramfs from the currently running machine's exact kernel**,
+and uses GRUB to construct a bootable ISO for BIOS/UEFI. Its default menu
+option opens a **non-networked inspection shell** (`init=/bin/bash`) without
+starting the snapshot's services. A second experimental entry starts systemd
+in multi-user mode. The root uses a temporary RAM overlay; changes to this
+live session are discarded. It **does not restore or overwrite any disks**.
+
+A complete snapshot of the same OS version must include the matching kernel
+modules and systemd; a partial `/home` backup will be refused. The builder
+writes an empty `/etc/fstab` and `/etc/crypttab` **in its temporary restored
+copy only** and disables Hangar's own timers there to avoid auto-mounting the
+original system's partitions. Your original snapshot and installed boot
+configuration are never touched.
+
+The machine building the image must have `restic`, `mkinitramfs`,
+`lsinitramfs`, `live-boot` with `live-boot-initramfs-tools`,
+`squashfs-tools`, `xorriso`, `grub-mkrescue`, `grub-pc-bin`,
+`grub-efi-amd64-bin` and `mtools` available. Hangar does **not**
+automatically install these optional test dependencies. Secure Boot is not
+supported by the unsigned experimental image.
+
+**Test only in an isolated virtual machine with no real disks or host
+filesystems attached**, initially using the default inspection shell. Full
+system boot remains unproven until you test your particular snapshot. Disk
+access and startup services in the full-boot entry are not generally safe to
+assume harmless on physical hardware. The ISO includes ALL restored files,
+including **unencrypted credentials, SSH keys and passwords**, and may require
+considerable scratch disk space. Do not distribute it.
+
+The optional local access kit also provides:
+```sh
+sudo ./hangar-access.sh live-iso latest /absolute/path/test-live.iso
+```
+This command uses the `hangar-live-iso.py` stored with the access kit; it
+can run after Hangar is removed, provided the live-boot build dependencies
+are installed. Trigger **Repositories → Access kit** again to upgrade a
+previously generated kit to this format without changing its restic password.
+
 The original restic password is stored separately at
 `/etc/hangar/repos/<id>.key` and is NOT embedded in the encrypted
 repository. To use the backup independently of Hangar, local repositories
