@@ -63,6 +63,12 @@ copy only** and disables Hangar's own timers there to avoid auto-mounting the
 original system's partitions. Your original snapshot and installed boot
 configuration are never touched.
 
+**Do the first build on a disposable cloned/test Linux environment, not a
+production install:** Debian specifically warns that `live-boot-initramfs-tools`
+is intended for live images, not for installation on a regular system.
+The kernel and modules used by that build environment must match those in
+the snapshot.
+
 The machine building the image must have `restic`, `mkinitramfs`,
 `lsinitramfs`, `live-boot` with `live-boot-initramfs-tools`,
 `squashfs-tools`, `xorriso`, `grub-mkrescue`, `grub-pc-bin`,
