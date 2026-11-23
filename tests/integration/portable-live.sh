@@ -8,6 +8,7 @@ trap 'rm -rf "$work"; rm -f /etc/hangar/repos/portable-ci.json /etc/hangar/repos
 mkdir -p /etc/hangar/repos /usr/libexec/hangar /var/cache/hangar/restic
 install -m 0755 "$ROOT/libexec/hangar-run" /usr/libexec/hangar/hangar-run
 install -m 0755 "$ROOT/libexec/hangar-portable" /usr/libexec/hangar/hangar-portable
+install -m 0755 "$ROOT/libexec/hangar-vhd" /usr/libexec/hangar/hangar-vhd
 printf '%s' 'portable-test-secret' > /etc/hangar/repos/portable-ci.key
 chmod 600 /etc/hangar/repos/portable-ci.key
 mkdir -p "$work/repo" "$work/input"
@@ -28,7 +29,25 @@ test -s "$work/hangar.iso"
 python3 /usr/libexec/hangar/hangar-portable access-kit portable-ci
 test -f "$work/repo/hangar-access.key"
 test -x "$work/repo/hangar-access.sh"
+test -f "$work/repo/hangar-vhd.py"
 "$work/repo/hangar-access.sh" snapshots
+python3 "$work/repo/hangar-vhd.py" --help >/dev/null
+
+# A generated helper may be updated safely, without overwriting an unknown script.
+printf '\n# previous Hangar revision\n' >> "$work/repo/hangar-vhd.py"
+python3 /usr/libexec/hangar/hangar-portable access-kit portable-ci
+cmp "$ROOT/libexec/hangar-vhd" "$work/repo/hangar-vhd.py"
+
+# Existing v2 kits must be recognized, migrated without changing their key.
+python3 - "$work/repo/hangar-access.sh" <<'PY'
+import runpy, sys
+from pathlib import Path
+old = runpy.run_path("/usr/libexec/hangar/hangar-portable", run_name="hangar_test")
+Path(sys.argv[1]).write_text(old["ACCESS_SCRIPT_V2"], encoding="utf-8")
+PY
+python3 /usr/libexec/hangar/hangar-portable access-kit portable-ci
+grep -q "Hangar standalone access kit v3" "$work/repo/hangar-access.sh"
+cmp "$key" "$work/repo/hangar-access.key"
 
 # Simulate an old kit and upgrade it, WITHOUT replacing or losing its key.
 cat > "$work/repo/hangar-access.sh" <<'LEGACY'
@@ -38,12 +57,13 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 exec restic -r "$here" --password-file "$here/hangar-access.key" "$@"
 LEGACY
 python3 /usr/libexec/hangar/hangar-portable access-kit portable-ci
-grep -q "Hangar standalone access kit v2" "$work/repo/hangar-access.sh"
+grep -q "Hangar standalone access kit v3" "$work/repo/hangar-access.sh"
 cmp "$key" "$work/repo/hangar-access.key"
 
 # Even after removing Hangar's executable, the access-kit shell script works.
 mv /usr/libexec/hangar/hangar-portable "$work/portable-away"
 mv /usr/libexec/hangar/hangar-run "$work/runner-away"
+mv /usr/libexec/hangar/hangar-vhd "$work/builder-away"
 "$work/repo/hangar-access.sh" iso latest "$work/standalone.iso"
 test -s "$work/standalone.iso"
 mkdir "$work/extracted"
@@ -57,4 +77,4 @@ test "$count" -eq 1
 if "$work/repo/hangar-access.sh" iso latest "$work/standalone.iso"; then
     echo "ISO builder must refuse to overwrite existing output" >&2; exit 1
 fi
-echo "Standalone data ISO and legacy access-kit upgrade passed"
+echo "Standalone data ISO, independent VHD helper, and legacy access-kit upgrade passed"
