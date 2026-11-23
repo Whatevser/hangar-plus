@@ -1338,6 +1338,35 @@
                 }
             },
 
+            // --- bootable VHDX/VHD disk image (no VM, no boot test) ---------
+            async createVhdx() {
+                if (!this.moment || this.busy || typeof root.prompt !== 'function') return;
+                if (typeof root.confirm !== 'function' || !root.confirm(
+                    'Create a DECRYPTED, bootable UEFI virtual disk from this entire Linux snapshot? ' +
+                    'It needs a full system backup (not /home only) and disk/GRUB/qemu-img tools ' +
+                    'on the Cockpit host. The image will contain unencrypted keys and credentials. ' +
+                    'It will NOT start a VM or write to physical disks. Continue?')) return;
+                const initial = '/var/tmp/hangar-' + this.moment.id.slice(0, 12) + '.vhdx';
+                const name = root.prompt(
+                    'Save bootable disk on the Cockpit host (.vhdx recommended, .vhd supported):',
+                    initial);
+                if (!name) return;
+                this.beginBusy('Creating bootable virtual disk…');
+                this.clearStatus();
+                try {
+                    await cockpit.spawn(['/usr/libexec/hangar/hangar-portable', 'vhdx',
+                        this.repoId, this.moment.id, name.trim()],
+                        { superuser: 'require', err: 'message' });
+                    this.noticeKind = 'success';
+                    this.notice = 'Bootable UEFI virtual disk created at ' + name.trim() +
+                        '. No VM or boot test was run; Secure Boot is unsupported.';
+                } catch (e) {
+                    this.handleError(e);
+                } finally {
+                    this.endBusy();
+                }
+            },
+
             // --- restore ------------------------------------------------------
 
             async restore() {
@@ -1764,6 +1793,9 @@
 '      <button type="button" class="btn btn-sm btn-outline-secondary"' +
 '              title="Create an unencrypted data ISO from the selected complete snapshot (requires xorriso)."' +
 '              :disabled="!moment || busy" @click="createIso()">Create ISO…</button>' +
+'      <button type="button" class="btn btn-sm btn-outline-secondary"' +
+'              title="Build a bootable UEFI disk image from a complete Linux snapshot. No VM or boot test; qemu-img is just a converter."' +
+'              :disabled="!moment || busy" @click="createVhdx()">Create VHDX…</button>' +
 
      // Deliberately last, outline rather than solid, and disabled while anything
      // else is in flight: it is the one control on this screen that destroys
