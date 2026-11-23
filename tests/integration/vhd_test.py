@@ -360,7 +360,7 @@ class VirtualDiskTests(unittest.TestCase):
             boot = esp / "EFI/BOOT"
             boot.mkdir(parents=True)
             (boot / "grub.cfg").symlink_to(Path(d) / "outside")
-            with self.assertRaisesRegex(ValueError, "symlinked"):
+            with self.assertRaisesRegex(ValueError, "unsafe EFI GRUB configuration"):
                 vhd.install_efi_grub_locator(
                     esp, "550e8400-e29b-41d4-a716-446655440000")
 
