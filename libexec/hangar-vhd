@@ -133,14 +133,16 @@ def check_restored_system(root):
             (root / "lib/systemd/systemd").is_file()):
         abort("Only complete systemd-based Linux snapshots are supported.")
     os_release = root / "etc/os-release"
-    if not os_release.exists():
-        abort("Snapshot lacks /etc/os-release.")
+    if not os_release.exists() or not os_release.resolve().is_relative_to(
+            root.resolve()):
+        abort("Snapshot lacks a self-contained /etc/os-release.")
     version = kernel_files(root)
     module_dir = root / "usr/lib/modules" / version
     alternative = root / "lib/modules" / version
     if not (module_dir.is_dir() or alternative.is_dir()):
         abort("Snapshot lacks kernel modules for " + version + ".")
-    for rel in ("etc/fstab", "etc/crypttab", "boot/grub", "boot/efi"):
+    for rel in ("etc/fstab", "etc/crypttab", "boot/grub",
+                "boot/grub/grub.cfg", "boot/efi"):
         p = root / rel
         if p.is_symlink():
             abort("Unsafe symlink in restored image: /" + rel)
