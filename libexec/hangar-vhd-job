@@ -64,9 +64,13 @@ def systemd_state(unit):
         error("Invalid VHD export unit.")
     p = subprocess.run(
         ["systemctl", "show", "--property=ActiveState", "--value", unit],
-        text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if p.returncode:
-        return "not-found"
+        message = (p.stderr or "").lower()
+        if "not found" in message or "could not be found" in message:
+            return "not-found"
+        # Losing the systemd bus is not evidence that the worker died.
+        return "unknown"
     return p.stdout.strip() or "not-found"
 
 
@@ -103,7 +107,9 @@ def status():
         "total_bytes": progress.get("total_bytes"),
         "updated": progress.get("updated"),
         "error": progress.get("error") if state == "failed" else None,
-        "warning": progress.get("warning") if running else None,
+        "warning": ("Cannot confirm systemd status; retrying." if
+                    unit_state == "unknown" else
+                    (progress.get("warning") if running else None)),
     }
     if state == "failed" and not result["error"]:
         result["error"] = ("VHDX service stopped before reporting completion. "
