@@ -425,6 +425,64 @@ class VirtualDiskTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "in use"):
                         vhd.repair_raw_image(image)
 
+    def test_repair_raw_rebuilds_embedded_loader_and_keeps_backup(self):
+        # Positive repair regression: old GRUB reaches grub> even though the
+        # root menu exists. The new EFI binary must embed its UUID locator.
+        with tempfile.TemporaryDirectory() as d:
+            image = Path(d) / "snapshot.raw"
+            image.write_bytes(b"raw-image")
+            work = Path(d) / "mounted"
+            work.mkdir()
+            uuid = "550e8400-e29b-41d4-a716-446655440000"
+            original = b"MZprevious EFI loader"
+            state = {}
+            values = iter(["", "/dev/loop42", "vfat", "HANGAR_EFI",
+                           "ext4", "HANGAR_ROOT", uuid])
+
+            def fake_command(args, **kwargs):
+                if args[:3] == ["mount", "-t", "ext4"]:
+                    (work / "boot/grub").mkdir(parents=True)
+                    (work / "boot/grub/grub.cfg").write_text(
+                        "menuentry 'recovered' { search --fs-uuid " + uuid + " }")
+                    (work / "boot/efi/EFI/BOOT").mkdir(parents=True)
+                    (work / "boot/efi/EFI/BOOT/BOOTX64.EFI").write_bytes(original)
+                elif args[0] == "grub-mkstandalone":
+                    state["grub_command"] = args
+                    staged = Path(next(a.split("=", 1)[1] for a in args
+                                       if a.startswith("--output=")))
+                    staged.write_bytes(b"MZ" + bytes(2046))
+                elif args[0] == "sync" and "backup" not in state:
+                    boot = work / "boot/efi/EFI/BOOT"
+                    state["backup"] = (boot / "BOOTX64.EFI.before-hangar-repair").read_bytes()
+                    state["installed"] = (boot / "BOOTX64.EFI").read_bytes()
+
+            def fake_cleanup(*args):
+                for child in work.iterdir():
+                    if child.is_dir():
+                        shutil.rmtree(child)
+                    else:
+                        child.unlink()
+                return []
+
+            with patch.object(vhd.os, "geteuid", return_value=0), \\
+                 patch.object(vhd.shutil, "which", return_value="/usr/bin/tool"), \\
+                 patch.object(vhd.subprocess, "run", return_value=type(
+                     "Status", (), {"returncode": 1})()), \\
+                 patch.object(vhd, "check_output", side_effect=lambda *a: next(values)), \\
+                 patch.object(vhd, "verify_loop"), \\
+                 patch.object(vhd, "partitions", return_value=(
+                     Path("/dev/loop42p1"), Path("/dev/loop42p2"))), \\
+                 patch.object(vhd, "command", side_effect=fake_command), \\
+                 patch.object(vhd, "cleanup_loop", side_effect=fake_cleanup), \\
+                 patch.object(vhd.tempfile, "mkdtemp", return_value=str(work)):
+                vhd.repair_raw_image(image)
+
+            self.assertEqual(state["backup"], original)
+            self.assertEqual(state["installed"], b"MZ" + bytes(2046))
+            self.assertEqual(state["grub_command"][0], "grub-mkstandalone")
+            self.assertIn("/boot/grub/grub.cfg=", " ".join(state["grub_command"]))
+            self.assertFalse(work.exists())
+
     def test_efi_vendor_paths_have_valid_image_uuid_locator(self):
         with tempfile.TemporaryDirectory() as d:
             esp = Path(d)
