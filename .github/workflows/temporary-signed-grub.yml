@@ -1,0 +1,72 @@
+name: Temporary Secure Boot export validation
+on:
+  push:
+    branches: [fix/signed-grub-uefi-recovery]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Python disk export and JS regression
+        run: |
+          python3 -m py_compile libexec/hangar-vhd
+          python3 tests/integration/vhd_test.py -v
+          python3 tests/integration/vhd_job_test.py -v
+          npm run test:unit
+          npm run test:smoke
+      - name: Real UEFI Secure Boot synthetic RAW image
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq grub2-common grub-efi-amd64-bin grub-efi-amd64-signed shim-signed qemu-system-x86 ovmf dosfstools e2fsprogs fdisk mtools sbsigntool
+          set -euo pipefail
+          temp="$(mktemp -d)"
+          trap 'rm -rf "$temp"' EXIT
+          mkdir -p "$temp/esp/EFI/BOOT" "$temp/rootfs/boot/grub"
+          printf '%s\n' \
+            'serial --unit=0 --speed=115200' \
+            'terminal_output serial' \
+            'echo HANGAR_SIGNED_GRUB_MENU_LOADED' \
+            'sleep 5' > "$temp/rootfs/boot/grub/grub.cfg"
+          echo "=== Host signed packages and GRUB install ==="
+          dpkg -l grub-efi-amd64-signed shim-signed | tail -8
+          sudo grub-install --target=x86_64-efi --efi-directory="$temp/esp" --boot-directory="$temp/rootfs/boot" --removable --no-nvram
+          find "$temp/esp" -type f -printf '%P %s bytes\n'
+          echo "=== Signature of EFI bootloader ==="
+          sbverify --list "$temp/esp/EFI/BOOT/BOOTX64.EFI" || true
+          python3 - "$temp/esp" <<'PY'
+          import pathlib,sys,importlib.machinery,importlib.util
+          path=pathlib.Path('libexec/hangar-vhd')
+          loader=importlib.machinery.SourceFileLoader('vhd',str(path))
+          spec=importlib.util.spec_from_loader(loader.name,loader)
+          mod=importlib.util.module_from_spec(spec)
+          loader.exec_module(mod)
+          mod.install_efi_grub_locator(pathlib.Path(sys.argv[1]),'550e8400-e29b-41d4-a716-446655440000')
+          PY
+          mkdir -p "$temp/rootfs/boot/grub"
+          truncate -s 256M "$temp/disk.raw"
+          printf 'label: gpt\nunit: sectors\n\n2048,131072,U\n133120,,L\n' | sfdisk --wipe always "$temp/disk.raw"
+          truncate -s 64M "$temp/esp.img"
+          mkfs.vfat -F 32 -n HANGAR_EFI "$temp/esp.img"
+          mcopy -s -i "$temp/esp.img" "$temp/esp/EFI" ::/
+          truncate -s 188M "$temp/root.img"
+          mkfs.ext4 -q -F -U 550e8400-e29b-41d4-a716-446655440000 -d "$temp/rootfs" "$temp/root.img"
+          dd if="$temp/esp.img" of="$temp/disk.raw" bs=1M seek=1 conv=notrunc status=none
+          dd if="$temp/root.img" of="$temp/disk.raw" bs=1M seek=65 conv=notrunc status=none
+          code=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd
+          vars=/usr/share/OVMF/OVMF_VARS_4M.ms.fd
+          test -s "$code" && test -s "$vars"
+          cp "$vars" "$temp/vars.fd"
+          set +e
+          timeout 27s qemu-system-x86_64 -machine q35,accel=tcg -m 512 \
+            -drive "if=pflash,format=raw,unit=0,readonly=on,file=$code" \
+            -drive "if=pflash,format=raw,unit=1,file=$temp/vars.fd" \
+            -drive "file=$temp/disk.raw,format=raw,if=virtio" \
+            -boot order=c -serial stdio -display none -monitor none -no-reboot \
+            > "$temp/serial.log" 2>&1
+          rc=$?
+          set -e
+          echo "QEMU result: $rc"
+          tail -90 "$temp/serial.log"
+          grep -F HANGAR_SIGNED_GRUB_MENU_LOADED "$temp/serial.log"
