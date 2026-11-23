@@ -1386,7 +1386,7 @@
             async vhdRequest(args) {
                 if (!hasCockpit())
                     throw fail('Cockpit connection unavailable. The export continues independently.');
-                const text = await cockpit.spawn(['/usr/libexec/hangar/hangar-vhd-job'].concat(args),
+                const text = await cockpit.spawn(['/usr/share/cockpit/hangar/libexec/hangar-vhd-job'].concat(args),
                     { superuser: 'require', err: 'message' });
                 return JSON.parse(text);
             },
