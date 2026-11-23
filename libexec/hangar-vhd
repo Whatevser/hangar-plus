@@ -1,0 +1,365 @@
+#!/usr/bin/env python3
+"""Create an offline, UEFI-bootable VHDX/VHD from a full Linux restic snapshot.
+
+No VM, live-boot tooling, partition writes to host disks or host NVRAM changes.
+Only a NEW, private sparse RAW file is partitioned and mounted via a verified
+loop device; GRUB is installed into its EFI partition. No boot test is made.
+"""
+import argparse
+import json
+import math
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+GIB = 1024 ** 3
+EFI_MIB = 512
+SNAPSHOT = re.compile(r"(?:latest|[0-9a-fA-F]{64})\Z")
+LOOP = re.compile(r"/dev/loop[0-9]+\Z")
+TOOLS = ("restic", "sfdisk", "losetup", "mkfs.vfat", "mkfs.ext4",
+         "mount", "umount", "blkid", "grub-install", "qemu-img")
+
+
+def abort(message):
+    raise ValueError(message)
+
+
+def command(args, **kwargs):
+    return subprocess.run([str(x) for x in args], check=True, **kwargs)
+
+
+def check_output(args, **kwargs):
+    return subprocess.check_output([str(x) for x in args], text=True, **kwargs).strip()
+
+
+def output_format(path):
+    if not path.is_absolute() or "\0" in str(path) or "\n" in str(path):
+        abort("Use an absolute disk image output path.")
+    fmt = {".vhdx": "vhdx", ".vhd": "vpc"}.get(path.suffix.lower())
+    if not fmt:
+        abort("Choose a .vhdx (recommended) or .vhd output filename.")
+    if not path.parent.is_dir():
+        abort("The destination directory does not exist.")
+    if os.path.lexists(path):
+        abort("The destination already exists; refusing to overwrite it.")
+    return fmt
+
+
+def preflight(output):
+    fmt = output_format(output)
+    if os.geteuid() != 0:
+        abort("Root is needed to mount a temporary disk image and preserve ownership.")
+    if sys.platform != "linux" or platform.machine() not in ("x86_64", "amd64"):
+        abort("Only x86_64 Linux with UEFI boot is supported by this builder.")
+    for tool in TOOLS:
+        if not shutil.which(tool):
+            abort("Missing '" + tool + "'. This export requires ordinary disk/EFI "
+                  "tools and qemu-img (qemu-utils), but no virtual machine.")
+    if not Path("/usr/lib/grub/x86_64-efi").is_dir():
+        abort("GRUB EFI modules unavailable (grub-efi-amd64-bin package).")
+    return fmt
+
+
+def restic_base(repo, password_file, cache_dir=None):
+    if not password_file.is_file():
+        abort("Restic repository password file is missing.")
+    args = ["restic", "-r", repo, "--password-file", str(password_file)]
+    if cache_dir:
+        args += ["--cache-dir", cache_dir]
+    return args
+
+
+def restore_bytes(restic, snapshot):
+    # Logical restored data size, not compressed repository pack size.
+    response = check_output(restic + [
+        "stats", "--mode", "restore-size", "--json", snapshot])
+    stats = json.loads(response)
+    n = stats.get("total_size", stats.get("totalSize"))
+    if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
+        abort("Unable to determine snapshot restore size.")
+    return n
+
+
+def disk_gib(logical_bytes, requested=None):
+    if requested is not None:
+        if requested < 16 or requested > 65536:
+            abort("Image size must be between 16 GiB and 64 TiB.")
+        return requested
+    # ext4 journal, filesystem overhead, EFI, space to boot and work.
+    calculated = math.ceil((logical_bytes * 1.35 + 8 * GIB) / GIB)
+    return max(16, calculated)
+
+
+def partition_script():
+    # Two GPT partitions: 512 MiB FAT32 ESP; remaining ext4 root.
+    # U and L are util-linux sfdisk's EFI/Linux GPT type aliases.
+    return "label: gpt\nunit: sectors\n\n,1048576,U\n,,L\n"
+
+
+def kernel_files(root):
+    """Find matching *regular* snapshot kernel and initrd files."""
+    boot = root / "boot"
+    if not boot.is_dir() or boot.is_symlink():
+        abort("Snapshot lacks a regular /boot directory.")
+    candidates = []
+    for kernel in boot.glob("vmlinuz-*"):
+        version = kernel.name[len("vmlinuz-"):]
+        initrd = boot / ("initrd.img-" + version)
+        if not version or kernel.is_symlink() or not kernel.is_file():
+            continue
+        if initrd.is_symlink() or not initrd.is_file():
+            continue
+        candidates.append(version)
+    if not candidates:
+        abort("Snapshot lacks matching /boot/vmlinuz-* and /boot/initrd.img-*.")
+    # sort numeric runs numerically (6.10 comes after 6.9)
+    candidates.sort(key=lambda ver: [(int(s) if s.isdigit() else s)
+                                      for s in re.findall(r"\d+|\D+", ver)])
+    return candidates[-1]
+
+
+def check_restored_system(root):
+    if not (root / "etc").is_dir() or (root / "etc").is_symlink():
+        abort("This isn't a complete Linux root snapshot: /etc is missing or invalid.")
+    if not (root / "usr").is_dir():
+        abort("This isn't a complete Linux root snapshot: /usr is missing.")
+    if not ((root / "usr/lib/systemd/systemd").is_file() or
+            (root / "lib/systemd/systemd").is_file()):
+        abort("Only complete systemd-based Linux snapshots are supported.")
+    os_release = root / "etc/os-release"
+    if not os_release.exists():
+        abort("Snapshot lacks /etc/os-release.")
+    version = kernel_files(root)
+    module_dir = root / "usr/lib/modules" / version
+    alternative = root / "lib/modules" / version
+    if not (module_dir.is_dir() or alternative.is_dir()):
+        abort("Snapshot lacks kernel modules for " + version + ".")
+    for rel in ("etc/fstab", "etc/crypttab", "boot/grub", "boot/efi"):
+        p = root / rel
+        if p.is_symlink():
+            abort("Unsafe symlink in restored image: /" + rel)
+    # A LUKS setup requires special initramfs/cryptroot reconfiguration.
+    crypttab = root / "etc/crypttab"
+    if crypttab.exists() and any(line.strip() and not line.lstrip().startswith("#")
+                                 for line in crypttab.read_text(encoding="utf-8").splitlines()):
+        abort("Encrypted-volume crypttab detected; automatic conversion of LUKS "
+              "systems is not yet supported.")
+    return version
+
+
+def make_grub_cfg(version, root_uuid):
+    # No reference to the host's boot entries, UUIDs or EFI variables.
+    return (f'set default=0\nset timeout=8\n'
+            f'menuentry "Hangar recovered Linux ({version})" {{\n'
+            f'    search --no-floppy --fs-uuid --set=root {root_uuid}\n'
+            f'    linux /boot/vmlinuz-{version} root=UUID={root_uuid} ro noresume\n'
+            f'    initrd /boot/initrd.img-{version}\n'
+            f'}}\n')
+
+
+def patch_image_root(root, version, root_uuid, efi_uuid):
+    # All changes stay on the loop-mounted image. Guard write destinations.
+    (root / "etc/fstab").write_text(
+        "# Generated for Hangar bootable virtual disk; original mounts omitted.\n"
+        f"UUID={root_uuid} / ext4 errors=remount-ro 0 1\n"
+        f"UUID={efi_uuid} /boot/efi vfat umask=0077 0 1\n",
+        encoding="utf-8")
+    (root / "etc/crypttab").write_text(
+        "# Generated for Hangar bootable virtual disk: no encrypted volumes.\n",
+        encoding="utf-8")
+    grub = root / "boot/grub"
+    grub.mkdir(parents=True, exist_ok=True)
+    (grub / "grub.cfg").write_text(make_grub_cfg(version, root_uuid),
+                                  encoding="utf-8")
+    # Avoid running Hangar's unattended backup/auto-update timers from a clone.
+    units = root / "etc/systemd/system"
+    if units.is_dir() and not units.is_symlink():
+        for timer in units.glob("hangar*.timer"):
+            if timer.is_file() or timer.is_symlink():
+                timer.unlink()
+                timer.symlink_to("/dev/null")
+    print("Configured image-only root UUID, EFI mount and GRUB menu.", flush=True)
+
+
+def verify_loop(loop, raw):
+    if not LOOP.fullmatch(loop):
+        abort("Unsafe loop device returned by losetup: " + loop)
+    backing = check_output(["losetup", "-n", "-O", "BACK-FILE", loop])
+    if os.path.realpath(backing) != os.path.realpath(raw):
+        abort("Refusing to touch a loop device not backed by the temporary image.")
+
+
+def partitions(loop):
+    # Some filesystems need a moment for loop partition nodes to appear.
+    for _ in range(20):
+        p1, p2 = Path(loop + "p1"), Path(loop + "p2")
+        if p1.exists() and p2.exists():
+            return p1, p2
+        time.sleep(0.2)
+    abort("Kernel could not expose the temporary image's partitions.")
+
+
+def cleanup_loop(loop, root, efi_mounted, root_mounted):
+    """Never delete the backing file if something is still mounted/attached."""
+    failures = []
+    if efi_mounted:
+        if subprocess.run(["umount", str(root / "boot/efi")]).returncode:
+            failures.append("EFI unmount")
+    if root_mounted:
+        if subprocess.run(["umount", str(root)]).returncode:
+            failures.append("root unmount")
+    if loop and not failures:
+        if subprocess.run(["losetup", "-d", loop]).returncode:
+            failures.append("loop detach")
+    return failures
+
+
+def make_raw(restic, snapshot, raw, mount_dir, size):
+    # RAW file is private, unique, and was created by THIS process.
+    fd = os.open(raw, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.truncate(size * GIB)
+    print(f"Partitioning NEW {size} GiB virtual disk...", flush=True)
+    command(["sfdisk", "--wipe", "always", raw],
+            input=partition_script(), text=True, stdout=subprocess.DEVNULL)
+    loop = None
+    root_mounted = False
+    efi_mounted = False
+    try:
+        loop = check_output(["losetup", "--find", "--show", "--partscan", raw])
+        verify_loop(loop, raw)
+        efi, linux = partitions(loop)
+        # A second ownership check immediately before formatting any block node.
+        verify_loop(loop, raw)
+        command(["mkfs.vfat", "-F", "32", "-n", "HANGAR_EFI", efi],
+                stdout=subprocess.DEVNULL)
+        command(["mkfs.ext4", "-F", "-L", "HANGAR_ROOT", linux],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        root_uuid = check_output(["blkid", "-s", "UUID", "-o", "value", linux])
+        efi_uuid = check_output(["blkid", "-s", "UUID", "-o", "value", efi])
+        if not re.fullmatch(r"[0-9a-fA-F-]{8,36}", root_uuid) or not re.fullmatch(
+                r"[0-9a-fA-F-]{8,36}", efi_uuid):
+            abort("Could not read new virtual partition UUIDs.")
+        command(["mount", "-t", "ext4", linux, mount_dir])
+        root_mounted = True
+        print("Restoring complete snapshot into virtual ext4 root...", flush=True)
+        command(restic + ["restore", snapshot, "--target", mount_dir],
+                stdout=subprocess.DEVNULL)
+        version = check_restored_system(mount_dir)
+        patch_image_root(mount_dir, version, root_uuid, efi_uuid)
+        esp_dir = mount_dir / "boot/efi"
+        esp_dir.mkdir(parents=True, exist_ok=True)
+        command(["mount", "-t", "vfat", efi, esp_dir])
+        efi_mounted = True
+        print("Installing UEFI fallback GRUB exclusively into virtual disk...", flush=True)
+        command(["grub-install", "--target=x86_64-efi",
+                 "--efi-directory=" + str(esp_dir),
+                 "--boot-directory=" + str(mount_dir / "boot"),
+                 "--removable", "--no-nvram"],
+                stdout=subprocess.DEVNULL)
+        if not (esp_dir / "EFI/BOOT/BOOTX64.EFI").is_file():
+            abort("Virtual UEFI bootloader was not created.")
+        command(["sync", "-f", esp_dir])
+        command(["sync", "-f", mount_dir])
+    finally:
+        problems = cleanup_loop(loop, mount_dir, efi_mounted, root_mounted)
+        if problems:
+            # Caller must preserve the temporary directory on cleanup failure.
+            raise RuntimeError("FAILED_TO_DETACH: " + ", ".join(problems))
+
+
+def publish_image(staged, output):
+    if os.path.lexists(output):
+        abort("Destination was created during export; refusing to overwrite.")
+    try:
+        os.link(staged, output)  # atomic no-clobber on filesystems supporting links
+    except OSError as exc:
+        if exc.errno not in (1, 18, 38, 95):
+            raise
+        fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as dest, staged.open("rb") as src:
+                shutil.copyfileobj(src, dest, 1024 * 1024)
+        except BaseException:
+            output.unlink(missing_ok=True)
+            raise
+    try:
+        output.chmod(0o600)
+    except OSError:
+        print("Warning: target filesystem doesn't support private permissions.",
+              file=sys.stderr)
+
+
+def build(repo, password_file, snapshot, output, cache_dir=None, size=None):
+    if not SNAPSHOT.fullmatch(snapshot):
+        abort("Use 'latest' or a full 64-character snapshot ID.")
+    fmt = preflight(output)
+    restic = restic_base(repo, password_file, cache_dir)
+    logical = restore_bytes(restic, snapshot)
+    size = disk_gib(logical, size)
+    if fmt == "vpc" and size > 2040:
+        abort("Legacy VHD limit exceeded. Choose VHDX instead.")
+    print(f"Snapshot: {logical / GIB:.1f} GiB logical; image capacity: {size} GiB.",
+          flush=True)
+    print("This exports DECRYPTED data. No VM will be installed or started.", flush=True)
+    original_umask = os.umask(0o077)
+    work = None
+    preserve = False
+    try:
+        work = Path(tempfile.mkdtemp(prefix=".hangar-vhd-", dir=output.parent))
+        raw = work / "disk.raw"
+        target = work / "disk.vhdx" if fmt == "vhdx" else work / "disk.vhd"
+        root = work / "root"
+        root.mkdir()
+        try:
+            make_raw(restic, snapshot, raw, root, size)
+        except RuntimeError as exc:
+            if str(exc).startswith("FAILED_TO_DETACH:"):
+                preserve = True
+            raise
+        print(f"Converting virtual disk to {output.suffix.upper()} (qemu-img only)...",
+              flush=True)
+        command(["qemu-img", "convert", "-f", "raw", "-O", fmt, "-S", "4k",
+                 raw, target])
+        command(["qemu-img", "info", "-f", fmt, target],
+                stdout=subprocess.DEVNULL)
+        if not target.is_file() or target.stat().st_size == 0:
+            abort("Conversion produced an empty virtual disk.")
+        publish_image(target, output)
+        print("Bootable UEFI disk image created: " + str(output), flush=True)
+        print("Boot has NOT been tested. Secure Boot is unsupported. "
+              "The image contains decrypted private data.", flush=True)
+    finally:
+        if work and not preserve:
+            shutil.rmtree(work)
+        elif work:
+            print("SAFETY: Keeping temporary image and mounts for manual cleanup: "
+                  + str(work), file=sys.stderr)
+        os.umask(original_umask)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--repo", required=True)
+    p.add_argument("--password-file", type=Path, required=True)
+    p.add_argument("--snapshot", required=True)
+    p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--cache-dir")
+    p.add_argument("--size-gib", type=int, help="Override automatically estimated size")
+    a = p.parse_args()
+    build(a.repo, a.password_file, a.snapshot, a.output, a.cache_dir, a.size_gib)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError, RuntimeError, subprocess.CalledProcessError,
+            json.JSONDecodeError) as exc:
+        print("Hangar bootable disk: " + str(exc), file=sys.stderr)
+        sys.exit(1)
