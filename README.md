@@ -67,13 +67,17 @@ Hangar supports these restic destination types directly:
 
 ### rclone destinations
 
-Use the built-in rclone wizard under **Repositories** to configure many additional services, including Google Drive, OneDrive, Dropbox, Box, pCloud, Mega, WebDAV, SMB, FTP, and others. You can also select an existing rclone remote.
+Use the built-in rclone wizard under **Repositories** to configure many additional services, including Google Drive, OneDrive, Dropbox, Box, pCloud, Mega, Koofr, OpenStack Swift, WebDAV, SMB, FTP, and others. You can also select an existing rclone remote.
 
 Authentication depends on the provider:
 
 - **Username/key credentials:** Supply fields in Hangar's form where the provider supports them.
 - **Browser/OAuth sign-in:** For headless servers, Hangar displays an `rclone authorize` command to run on a computer with a browser. Paste the resulting token into Hangar.
 - **Manual configuration:** Some providers, notably **Jottacloud**, require interactive `rclone config` outside the wizard; Hangar can then use the configured remote.
+
+| Setup method | Provider | Requirement |
+| --- | --- | --- |
+| **Manual** | Jottacloud | Hangar cannot configure the remote directly; use interactive `rclone config` first. |
 
 Google Drive's shared rclone client ID may be heavily rate-limited; a personal client ID is recommended for sustained use. Business OneDrive tenants can require their own app registration. Providers may expire tokens or impose quotas; Hangar attempts to identify expired authorization and offers a reconnection action.
 
@@ -156,7 +160,7 @@ The mount location, idle-unmount interval, and **Allow local access** setting li
 1. Allocate a **private, sparse RAW disk** sized from restic's logical restore size plus headroom (minimum 16 GiB).
 2. Partition it as **GPT** with a **512 MiB FAT32 EFI System Partition** and an **ext4 root partition**.
 3. Attach it using a verified loop device, format the partitions, and run **restic restore directly into ext4**, preserving supported metadata.
-4. Check the restored system for a matching **kernel, initramfs, and modules**; update **the image's** root UUID/fstab and GRUB configuration; install a removable **x86-64 UEFI GRUB** loader into **the image's** EFI partition.
+4. Check the restored system for a matching **kernel, initramfs, and modules**; recreate missing empty **`/dev`, `/proc`, `/sys`, `/run`, `/tmp`, `/var/tmp`** mountpoints inside the image (without overwriting existing directories); configure **the image's** root UUID/fstab and GRUB menu; produce a **standalone x86-64 UEFI GRUB** loader embedding the image-specific UUID locator, so the VM can find `/boot/grub/grub.cfg` without manual commands.
 5. Unmount and detach. For **RAW**, publish that same sparse disk directly. For **VHDX/VHD only**, run `qemu-img convert` to create the requested output.
 
 **RAW avoids the extra conversion and extra populated image copy.** A RAW disk's *virtual capacity* can be much larger than its actual allocated blocks: compare `ls -lh` (logical size) with `du -h` (space used). Use sparse-aware copy tools when moving it.
@@ -173,7 +177,7 @@ Output files are not silently overwritten. The disk contains plaintext data and 
 
 The exporter targets **x86-64 UEFI, systemd-based Linux installations with an unencrypted ext4 root** and a complete snapshot including `/etc`, `/boot`, kernel modules, and initramfs.
 
-It **does not** recreate encrypted-root/LUKS, Btrfs/ZFS/LVM layouts, independent `/boot` partitions, or a BIOS/legacy bootloader. **Secure Boot is unsupported** by the generated unsigned EFI bootloader. It does not inspect or repair a VM's firmware settings.
+It **does not** recreate encrypted-root/LUKS, Btrfs/ZFS/LVM layouts, independent `/boot` partitions, or a BIOS/legacy bootloader. **Secure Boot is unsupported** by the generated unsigned EFI bootloader. It does not inspect or repair a VM's firmware settings. The standalone EFI GRUB executable is unsigned.
 
 For **Cockpit Virtual Machines**, select **UEFI/OVMF firmware with Secure Boot disabled** and attach a `.raw` disk with the QEMU/libvirt **raw** driver. Make sure the VM's QEMU process can access the file *and every parent directory*. Firmware, virtual disk controller, and initramfs driver differences may still prevent boot.
 
@@ -278,7 +282,7 @@ sudo make uninstall
 | **fuse3** | Snapshot FUSE browsing | Hangar dependency setup can install it; `restic ls` is a fallback |
 | **xorriso** | Non-bootable data ISO export | Install separately if unavailable |
 | **sfdisk, losetup, mount, umount, blkid, mkfs.vfat, mkfs.ext4** | Bootable disk creation | Host disk/FS tools; check before exporting |
-| **grub-install** plus x86-64 EFI modules | Bootable UEFI disks | Install the host's GRUB EFI tooling |
+| **grub-mkstandalone** plus x86-64 EFI modules | Bootable UEFI disks | Install the host's GRUB EFI tooling |
 | **qemu-img** (`qemu-utils`) | **Only VHDX/VHD** conversion | **Not needed for RAW export** |
 | **Podman or Docker** | Corresponding container-volume jobs | Runtime must already manage those volumes |
 

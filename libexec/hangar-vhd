@@ -26,7 +26,7 @@ SNAPSHOT = re.compile(r"(?:latest|[0-9a-fA-F]{64})\Z")
 KERNEL_VERSION = re.compile(r"[A-Za-z0-9._+-]+\Z")
 LOOP = re.compile(r"/dev/loop[0-9]+\Z")
 TOOLS = ("restic", "sfdisk", "losetup", "mkfs.vfat", "mkfs.ext4",
-         "mount", "umount", "blkid", "grub-install")
+         "mount", "umount", "blkid", "grub-mkstandalone")
 
 
 class ExportCancelled(Exception):
@@ -338,6 +338,65 @@ def make_grub_cfg(version, root_uuid):
             f'}}\n')
 
 
+def make_efi_grub_locator(root_uuid):
+    """Find the *exported image* root, not the temporary loop device/host.
+
+    grub-mkstandalone embeds this locator inside BOOTX64.EFI so GRUB cannot
+    start at a bare prompt because its hardcoded prefix is stale. The real
+    menu remains on the image\'s ext4 /boot/grub/grub.cfg.
+    """
+    if not re.fullmatch(r"[0-9a-fA-F-]{8,36}", root_uuid):
+        abort("Invalid image root UUID for EFI boot configuration.")
+    return (
+        f"search --no-floppy --fs-uuid --set=root {root_uuid}\n"
+        # Do NOT switch GRUB's $prefix to the restored disk. grub-mkstandalone
+        # bundles its modules under (memdisk)/boot/grub, while the snapshot may
+        # lack a /boot/grub/x86_64-efi modules directory. Setting the disk as
+        # prefix makes even simple commands fail to load their modules.
+        "configfile ($root)/boot/grub/grub.cfg\n"
+    )
+
+
+def install_efi_grub_locator(esp_dir, root_uuid):
+    boot = esp_dir / "EFI/BOOT"
+    if not boot.is_dir() or boot.is_symlink():
+        abort("GRUB removable EFI directory is missing or unsafe.")
+    locator = boot / "grub.cfg"
+    if locator.is_symlink():
+        abort("Refusing to replace symlinked EFI GRUB configuration.")
+    locator.write_text(make_efi_grub_locator(root_uuid), encoding="utf-8")
+    if locator.stat().st_size == 0:
+        abort("The EFI GRUB configuration is empty.")
+    print("Installed root-UUID GRUB locator in EFI/BOOT/grub.cfg.", flush=True)
+
+
+# The restored snapshot intentionally omits volatile pseudo-filesystems.
+# Their empty mountpoint directories are needed by initramfs-tools/run-init.
+# Only create paths *inside* the loop-mounted destination, never the source.
+BOOT_DIRS = (
+    ("dev", 0o755), ("proc", 0o555), ("sys", 0o555),
+    ("run", 0o755), ("tmp", 0o1777), ("var", 0o755),
+    ("var/tmp", 0o1777),
+)
+
+
+def ensure_boot_directories(root):
+    """Create missing essential mountpoints, preserving any restored dirs."""
+    if not root.is_dir() or root.is_symlink():
+        abort("Virtual root mount directory is missing or unsafe.")
+    for rel, mode in BOOT_DIRS:
+        path = root / rel
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            abort("Unsafe essential directory in restored image: /" + rel)
+        if not path.exists():
+            path.mkdir(mode=mode)
+            # mkdir is affected by the host's umask; set the required mode,
+            # especially sticky-bit permissions for /tmp and /var/tmp.
+            path.chmod(mode)
+    print("Verified virtual /dev, /proc, /sys, /run and temporary directories.",
+          flush=True)
+
+
 def patch_image_root(root, version, root_uuid, efi_uuid):
     # All changes stay on the loop-mounted image. Guard write destinations.
     (root / "etc/fstab").write_text(
@@ -427,19 +486,33 @@ def make_raw(restic, snapshot, raw, mount_dir, size):
         restore_with_progress(restic, snapshot, mount_dir)
         emit("Preparing boot", "Checking kernel and preparing the boot configuration…")
         version = check_restored_system(mount_dir)
+        ensure_boot_directories(mount_dir)
         patch_image_root(mount_dir, version, root_uuid, efi_uuid)
         esp_dir = mount_dir / "boot/efi"
         esp_dir.mkdir(parents=True, exist_ok=True)
         command(["mount", "-t", "vfat", efi, esp_dir])
         efi_mounted = True
-        emit("Installing GRUB", "Installing the UEFI bootloader into the virtual disk…")
-        command(["grub-install", "--target=x86_64-efi",
-                 "--efi-directory=" + str(esp_dir),
-                 "--boot-directory=" + str(mount_dir / "boot"),
-                 "--removable", "--no-nvram"],
+        emit("Installing GRUB", "Embedding the virtual root locator in a standalone UEFI GRUB…")
+        # grub-install can bake the host-side loop device / boot prefix into its
+        # EFI image. It then boots to a bare grub> prompt inside the VM. Build
+        # a self-contained GRUB executable with an embedded UUID locator.
+        # Only the image's EFI partition is written. Secure Boot is unsupported.
+        boot_dir = esp_dir / "EFI/BOOT"
+        boot_dir.mkdir(parents=True, exist_ok=True)
+        install_efi_grub_locator(esp_dir, root_uuid)
+        loader = boot_dir / "BOOTX64.EFI"
+        if loader.is_symlink():
+            abort("Refusing to replace symlinked virtual EFI bootloader.")
+        command(["grub-mkstandalone", "--format=x86_64-efi",
+                 "--modules=part_gpt ext2 fat search_fs_uuid configfile normal linux",
+                 "--output=" + str(loader),
+                 "boot/grub/grub.cfg=" + str(boot_dir / "grub.cfg")],
                 stdout=subprocess.DEVNULL)
-        if not (esp_dir / "EFI/BOOT/BOOTX64.EFI").is_file():
-            abort("Virtual UEFI bootloader was not created.")
+        if not loader.is_file() or loader.stat().st_size < 1024:
+            abort("Standalone UEFI GRUB executable was not created correctly.")
+        with loader.open("rb") as binary:
+            if binary.read(2) != b"MZ":
+                abort("Generated EFI bootloader has an invalid executable header.")
         emit("Syncing", "Flushing the virtual filesystems to disk…")
         command(["sync", "-f", esp_dir])
         command(["sync", "-f", mount_dir])
