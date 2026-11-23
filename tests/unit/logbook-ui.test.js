@@ -2048,7 +2048,7 @@ test('VHDX action uses short systemd job control rather than long cockpit spawn'
     try {
         await withCockpit((argv) => {
             calls.push(argv);
-            if (argv[1] === 'start') return Promise.resolve(JSON.stringify({
+            if (argv[2] === 'start') return Promise.resolve(JSON.stringify({
                 state: 'running', job_id: 'one', phase: 'Restoring snapshot', percent: 0.42
             }));
             return Promise.resolve(JSON.stringify({ state: 'running', job_id: 'one' }));
