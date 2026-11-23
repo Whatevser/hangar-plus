@@ -33,7 +33,7 @@ class VhdJobTests(unittest.TestCase):
     def test_start_detaches_process_and_prevents_duplicate_jobs(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
-            out = str(root / "disk.vhdx")
+            out = str(root / "disk.raw")
             calls = []
             def fake_run(args, **kw):
                 calls.append(args)
@@ -49,6 +49,8 @@ class VhdJobTests(unittest.TestCase):
                 self.assertEqual(args[0], "systemd-run")
                 self.assertIn("--service-type=exec", args)
                 self.assertIn("--property=KillMode=process", args)
+                self.assertEqual(args[args.index(str(root / "hangar-portable")) + 1], "raw")
+                self.assertEqual(result["output"], out)
                 self.assertEqual(args[-2:], [str(root / "state/progress.json"), result["job_id"]])
                 with self.assertRaisesRegex(ValueError, "already running"):
                     job.start("full", ID, str(root / "different.vhdx"))
