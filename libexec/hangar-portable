@@ -148,10 +148,10 @@ ACCESS_SCRIPT = ACCESS_SCRIPT_V2.replace(
     "Hangar standalone access kit v2", "Hangar standalone access kit v3"
 ).replace(
     'exec restic -r "$here" --password-file "$key" "$@"',
-    '''if [ "$#" -gt 0 ] && { [ "$1" = "vhd" ] || [ "$1" = "vhdx" ]; }; then
+    '''if [ "$#" -gt 0 ] && { [ "$1" = "raw" ] || [ "$1" = "img" ] || [ "$1" = "vhd" ] || [ "$1" = "vhdx" ]; }; then
     shift
     if [ "$#" -ne 2 ]; then
-        echo "Usage: $0 vhdx <latest|snapshot-id> </absolute/output.vhdx>" >&2
+        echo "Usage: $0 raw <latest|snapshot-id> </absolute/output.raw> (also: img, vhdx, vhd)" >&2
         exit 2
     fi
     exec python3 "$here/hangar-vhd.py" --repo "$here" --password-file "$key" --snapshot "$1" --output "$2"
@@ -189,7 +189,7 @@ def vhd_builder():
     # When an older self-updater first discovers a newer Hangar release it
     # copies the plugin bundle, but might omit newly added /usr/libexec helpers.
     # The bundled helper was downloaded in that same update; using it directly
-    # lets VHDX export work immediately without a manual install.
+    # lets disk export work immediately without a manual install.
     for path in (VHD_EXEC, VHD_BUNDLED):
         if path.is_file() and not path.is_symlink():
             return path
@@ -252,7 +252,7 @@ def export_access_kit(repo_id):
 
     print("Standalone access kit ready in " + str(folder), flush=True)
     print("Run: ./hangar-access.sh iso latest /absolute/path/backup.iso", flush=True)
-    print("Bootable disk: ./hangar-access.sh vhdx latest /absolute/path/backup.vhdx", flush=True)
+    print("Bootable disk: ./hangar-access.sh raw latest /absolute/path/backup.raw", flush=True)
     print("WARNING: Anyone with this directory can decrypt the backups.", flush=True)
 
 
@@ -261,7 +261,7 @@ def main(argv):
         abort("Administrator access is required.")
     if len(argv) == 5 and argv[1] == "iso":
         export_iso(argv[2], argv[3], argv[4])
-    elif len(argv) in (5, 7) and argv[1] == "vhdx":
+    elif len(argv) in (5, 7) and argv[1] in ("raw", "img", "vhdx", "vhd"):
         _, args, env = repository(argv[2])
         program = [
             sys.executable, str(vhd_builder()),
@@ -279,7 +279,7 @@ def main(argv):
     elif len(argv) == 3 and argv[1] == "access-kit":
         export_access_kit(argv[2])
     else:
-        abort("Usage: hangar-portable iso|vhdx REPO SNAPSHOT OUTPUT | access-kit REPO")
+        abort("Usage: hangar-portable iso|raw|img|vhdx|vhd REPO SNAPSHOT OUTPUT | access-kit REPO")
 
 
 if __name__ == "__main__":
