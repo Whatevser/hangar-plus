@@ -340,6 +340,25 @@ class VirtualDiskTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unsafe essential directory"):
                 vhd.ensure_boot_directories(root)
 
+    def test_inplace_raw_repair_refuses_running_vm_and_unsafe_input(self):
+        with tempfile.TemporaryDirectory() as d:
+            image = Path(d) / "disk.raw"
+            image.write_bytes(b"test-file")
+            link = Path(d) / "linked.raw"
+            link.symlink_to(image)
+            with patch.object(vhd.os, "geteuid", return_value=0):
+                with self.assertRaisesRegex(ValueError, "regular file"):
+                    vhd.repair_raw_image(link)
+                with self.assertRaisesRegex(ValueError, "absolute path"):
+                    vhd.repair_raw_image(Path("relative.raw"))
+                with self.assertRaisesRegex(ValueError, "absolute path"):
+                    vhd.repair_raw_image(Path(d) / "image.vhdx")
+                with patch.object(vhd.shutil, "which", return_value="/usr/bin/tool"), \
+                     patch.object(vhd.subprocess, "run",
+                                  return_value=type("Status", (), {"returncode": 0})()):
+                    with self.assertRaisesRegex(ValueError, "in use"):
+                        vhd.repair_raw_image(image)
+
     def test_efi_vendor_paths_have_valid_image_uuid_locator(self):
         with tempfile.TemporaryDirectory() as d:
             esp = Path(d)
