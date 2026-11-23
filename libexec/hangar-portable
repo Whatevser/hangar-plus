@@ -16,6 +16,8 @@ from pathlib import Path
 CONF = "/etc/hangar"
 RUNNER = "/usr/libexec/hangar/hangar-run"
 CACHE = "/var/cache/hangar/restic"
+VHD_EXEC = Path("/usr/libexec/hangar/hangar-vhd")
+VHD_BUNDLED = Path("/usr/share/cockpit/hangar/libexec/hangar-vhd")
 SNAPSHOT_RE = re.compile(r"[0-9a-fA-F]{64}\Z")
 REPO_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62})\Z")
 
@@ -183,6 +185,18 @@ def publish_builder(source, dest):
 
 
 
+def vhd_builder():
+    # When an older self-updater first discovers a newer Hangar release it
+    # copies the plugin bundle, but might omit newly added /usr/libexec helpers.
+    # The bundled helper was downloaded in that same update; using it directly
+    # lets VHDX export work immediately without a manual install.
+    for path in (VHD_EXEC, VHD_BUNDLED):
+        if path.is_file() and not path.is_symlink():
+            return path
+    abort("The VHDX builder is missing from both installed Hangar paths. "
+          "Run Hangar Settings → Install update or reinstall Hangar.")
+
+
 def export_access_kit(repo_id):
     definition, _, _ = repository(repo_id)
     if definition.get("kind") != "local":
@@ -193,7 +207,7 @@ def export_access_kit(repo_id):
     key_file = Path(CONF) / "repos" / (repo_id + ".key")
     key_dest = folder / "hangar-access.key"
     script_dest = folder / "hangar-access.sh"
-    builder_source = Path("/usr/libexec/hangar/hangar-vhd")
+    builder_source = vhd_builder()
     builder_dest = folder / "hangar-vhd.py"
     if not builder_source.is_file():
         abort("Bootable disk image helper is not installed. Update Hangar first.")
@@ -250,7 +264,7 @@ def main(argv):
     elif len(argv) == 5 and argv[1] == "vhdx":
         _, args, env = repository(argv[2])
         subprocess.run([
-            sys.executable, "/usr/libexec/hangar/hangar-vhd",
+            sys.executable, str(vhd_builder()),
             "--repo", args[2],
             "--password-file", args[4],
             "--cache-dir", CACHE,
