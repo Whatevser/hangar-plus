@@ -59,7 +59,7 @@ def emit(phase, detail, *, state="running", percent=None,
             if os.path.exists(name):
                 os.unlink(name)
     if state != "running" or percent is None:
-        print("VHDX: " + detail, flush=True)
+        print("Disk export: " + detail, flush=True)
 
 
 def on_cancel(_signal, _frame):
