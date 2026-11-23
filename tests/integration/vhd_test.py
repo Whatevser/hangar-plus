@@ -40,6 +40,8 @@ class VirtualDiskTests(unittest.TestCase):
     def test_raw_skips_conversion_and_keeps_sparse_virtual_length(self):
         with tempfile.TemporaryDirectory() as d:
             output = Path(d) / "recovered.raw"
+            password = Path(d) / "key"
+            password.write_text("test-secret")
             def fake_raw(restic, snapshot, raw, root, size):
                 # This is intentionally a sparse file, like the real builder.
                 with raw.open("wb") as f:
@@ -54,7 +56,7 @@ class VirtualDiskTests(unittest.TestCase):
                  patch.object(vhd, "command", side_effect=AssertionError(
                      "RAW must never call qemu-img")), \
                  patch.object(vhd, "PROGRESS_FILE", None):
-                vhd.build("/repo", Path("/unused/password"), "latest", output)
+                vhd.build("/repo", password, "latest", output)
             self.assertEqual(output.stat().st_size, 16 * 1024 * 1024)
             with output.open("rb") as f:
                 f.seek(512)
@@ -66,6 +68,8 @@ class VirtualDiskTests(unittest.TestCase):
     def test_vhdx_still_uses_conversion_on_request(self):
         with tempfile.TemporaryDirectory() as d:
             output = Path(d) / "recovered.vhdx"
+            password = Path(d) / "key"
+            password.write_text("test-secret")
             conversions = []
             def fake_raw(restic, snapshot, raw, root, size):
                 raw.write_bytes(b"raw")
@@ -81,7 +85,7 @@ class VirtualDiskTests(unittest.TestCase):
                  patch.object(vhd, "convert_with_progress", side_effect=fake_convert), \
                  patch.object(vhd, "command", side_effect=fake_command), \
                  patch.object(vhd, "PROGRESS_FILE", None):
-                vhd.build("/repo", Path("/unused/password"), "latest", output)
+                vhd.build("/repo", password, "latest", output)
             self.assertEqual(conversions, [("vhdx", ".vhdx")])
             self.assertIn(["qemu-img", "info", "-f", "vhdx",
                            next(c[-1] for c in commands if c[0] == "qemu-img")],
