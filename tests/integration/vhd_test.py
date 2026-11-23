@@ -3,6 +3,7 @@
 import importlib.machinery
 import importlib.util
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -464,16 +465,16 @@ class VirtualDiskTests(unittest.TestCase):
                         child.unlink()
                 return []
 
-            with patch.object(vhd.os, "geteuid", return_value=0), \\
-                 patch.object(vhd.shutil, "which", return_value="/usr/bin/tool"), \\
+            with patch.object(vhd.os, "geteuid", return_value=0), \
+                 patch.object(vhd.shutil, "which", return_value="/usr/bin/tool"), \
                  patch.object(vhd.subprocess, "run", return_value=type(
-                     "Status", (), {"returncode": 1})()), \\
-                 patch.object(vhd, "check_output", side_effect=lambda *a: next(values)), \\
-                 patch.object(vhd, "verify_loop"), \\
+                     "Status", (), {"returncode": 1})()), \
+                 patch.object(vhd, "check_output", side_effect=lambda *a: next(values)), \
+                 patch.object(vhd, "verify_loop"), \
                  patch.object(vhd, "partitions", return_value=(
-                     Path("/dev/loop42p1"), Path("/dev/loop42p2"))), \\
-                 patch.object(vhd, "command", side_effect=fake_command), \\
-                 patch.object(vhd, "cleanup_loop", side_effect=fake_cleanup), \\
+                     Path("/dev/loop42p1"), Path("/dev/loop42p2"))), \
+                 patch.object(vhd, "command", side_effect=fake_command), \
+                 patch.object(vhd, "cleanup_loop", side_effect=fake_cleanup), \
                  patch.object(vhd.tempfile, "mkdtemp", return_value=str(work)):
                 vhd.repair_raw_image(image)
 
