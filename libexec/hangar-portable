@@ -158,7 +158,7 @@ exec restic -r "$here" --password-file "$key" "$@"'''
 )
 
 # Only copies of Hangar's generated helper may be refreshed automatically.
-BUILDER_HEADER = '#!/usr/bin/env python3\\n"""Create an offline, UEFI-bootable VHDX/VHD'
+BUILDER_HEADER = '#!/usr/bin/env python3\n"""Create an offline, UEFI-bootable VHDX/VHD'
 
 
 def publish_builder(source, dest):
