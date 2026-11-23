@@ -14,6 +14,7 @@ import platform
 import re
 import signal
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -350,6 +351,19 @@ def make_efi_grub_locator(root_uuid):
     )
 
 
+def install_distribution_grub(esp_dir, boot_directory, root_uuid):
+    """Install distro EFI binaries (signed when available) and UUID locators."""
+    command(["grub-install", "--target=x86_64-efi",
+             "--efi-directory=" + str(esp_dir),
+             "--boot-directory=" + str(boot_directory),
+             "--removable", "--no-nvram"],
+            stdout=subprocess.DEVNULL)
+    loader = esp_dir / "EFI/BOOT/BOOTX64.EFI"
+    if not loader.is_file() or loader.is_symlink():
+        abort("Removable EFI bootloader was not installed safely.")
+    install_efi_grub_locator(esp_dir, root_uuid)
+
+
 def install_efi_grub_locator(esp_dir, root_uuid):
     """Support signed distro GRUB prefix paths without modifying EFI binaries.
 
@@ -499,18 +513,7 @@ def make_raw(restic, snapshot, raw, mount_dir, size):
         command(["mount", "-t", "vfat", efi, esp_dir])
         efi_mounted = True
         emit("Installing GRUB", "Installing distro GRUB EFI files and image-specific menu locator…")
-        # grub-mkstandalone produces an unsigned EFI executable: Secure Boot
-        # OVMF rejects it with Access Denied. Instead preserve grub-install's
-        # packaged signed shim/GRUB binaries when the host provides them.
-        command(["grub-install", "--target=x86_64-efi",
-                 "--efi-directory=" + str(esp_dir),
-                 "--boot-directory=" + str(mount_dir / "boot"),
-                 "--removable", "--no-nvram"],
-                stdout=subprocess.DEVNULL)
-        loader = esp_dir / "EFI/BOOT/BOOTX64.EFI"
-        if not loader.is_file() or loader.is_symlink():
-            abort("Removable EFI bootloader was not installed safely.")
-        install_efi_grub_locator(esp_dir, root_uuid)
+        install_distribution_grub(esp_dir, mount_dir / "boot", root_uuid)
         emit("Syncing", "Flushing the virtual filesystems to disk…")
         command(["sync", "-f", esp_dir])
         command(["sync", "-f", mount_dir])
@@ -526,6 +529,95 @@ def make_raw(restic, snapshot, raw, mount_dir, size):
         if problems:
             # Caller must preserve the temporary directory on cleanup failure.
             raise RuntimeError("FAILED_TO_DETACH: " + ", ".join(problems))
+
+
+
+def repair_raw_image(image):
+    """Repair EFI and missing mountpoint dirs in an existing Hangar RAW image.
+
+    Does not run restic, overwrite the disk image, or modify host boot/NVRAM.
+    The caller MUST shut down the VM first. We check file usage and partition
+    labels before mounting anything for write.
+    """
+    if os.geteuid() != 0:
+        abort("Administrator privileges are required to repair a RAW image.")
+    if not image.is_absolute() or image.suffix.lower() not in (".raw", ".img"):
+        abort("Specify an absolute path to a .raw or .img disk image.")
+    if image.is_symlink() or not image.is_file() or not stat.S_ISREG(image.stat().st_mode):
+        abort("RAW image must be a regular file, not a symlink.")
+    for tool in ("fuser", "losetup", "blkid", "mount", "umount", "grub-install"):
+        if not shutil.which(tool):
+            abort("Missing required repair tool: " + tool)
+    # Prevent corruption when a running VM is using the same image. Running
+    # fuser as root sees the QEMU process even if it has different credentials.
+    in_use = subprocess.run(["fuser", "-s", str(image)]).returncode
+    if in_use != 1:
+        abort("RAW image is in use or file usage couldn't be verified. Shut down "
+              "the VM completely before repairing it.")
+    if check_output(["losetup", "-j", str(image)]):
+        abort("RAW image is already attached to a loop device.")
+    work = Path(tempfile.mkdtemp(prefix="hangar-efi-repair-"))
+    loop = None
+    root_mounted = False
+    efi_mounted = False
+    preserve = False
+    try:
+        loop = check_output(["losetup", "--find", "--show", "--partscan", str(image)])
+        verify_loop(loop, image)
+        efi, linux = partitions(loop)
+        for dev, filesystem, label in ((efi, "vfat", "HANGAR_EFI"),
+                                       (linux, "ext4", "HANGAR_ROOT")):
+            kind = check_output(["blkid", "-s", "TYPE", "-o", "value", str(dev)])
+            actual = check_output(["blkid", "-s", "LABEL", "-o", "value", str(dev)])
+            if kind != filesystem or actual != label:
+                abort("Refusing non-Hangar RAW image: unexpected EFI/root partition "
+                      "filesystem or label.")
+        root_uuid = check_output(["blkid", "-s", "UUID", "-o", "value", str(linux)])
+        if not re.fullmatch(r"[0-9a-fA-F-]{8,36}", root_uuid):
+            abort("Invalid UUID on RAW image root partition.")
+        command(["mount", "-t", "ext4", str(linux), str(work)])
+        root_mounted = True
+        if not (work / "boot/grub/grub.cfg").is_file() or (
+                (work / "boot/grub/grub.cfg").is_symlink()):
+            abort("No safe restored /boot/grub/grub.cfg found in this image.")
+        if root_uuid not in (work / "boot/grub/grub.cfg").read_text(encoding="utf-8"):
+            abort("Existing GRUB menu does not match this image's root UUID.")
+        ensure_boot_directories(work)
+        esp = work / "boot/efi"
+        if esp.is_symlink():
+            abort("Refusing symlinked EFI mountpoint.")
+        esp.mkdir(parents=True, exist_ok=True)
+        command(["mount", "-t", "vfat", str(efi), str(esp)])
+        efi_mounted = True
+        boot = esp / "EFI/BOOT"
+        loader = boot / "BOOTX64.EFI"
+        if loader.exists():
+            if loader.is_symlink() or not loader.is_file():
+                abort("Refusing unsafe existing EFI bootloader.")
+            backup = boot / "BOOTX64.EFI.before-hangar-repair"
+            if not backup.exists():
+                shutil.copyfile(loader, backup)
+        print("Reinstalling distribution EFI bootloader in RAW image…", flush=True)
+        install_distribution_grub(esp, work / "boot", root_uuid)
+        command(["sync", "-f", str(esp)])
+        command(["sync", "-f", str(work)])
+        print("EFI and essential-directory repair completed inside " + str(image),
+              flush=True)
+    finally:
+        previous_handler = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        try:
+            failures = cleanup_loop(loop, work, efi_mounted, root_mounted)
+        finally:
+            signal.signal(signal.SIGTERM, previous_handler)
+        if failures:
+            preserve = True
+            print("SAFETY: Keeping mount point due to failed cleanup: " + str(work),
+                  file=sys.stderr)
+        if not preserve:
+            work.rmdir()
+        if failures:
+            raise RuntimeError("FAILED_TO_DETACH: " + ", ".join(failures))
 
 
 def publish_image(staged, output, *, preserve_sparse=False):
@@ -622,10 +714,12 @@ def build(repo, password_file, snapshot, output, cache_dir=None, size=None):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--repo", required=True)
-    p.add_argument("--password-file", type=Path, required=True)
-    p.add_argument("--snapshot", required=True)
-    p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--repair-raw", type=Path,
+                   help="Repair EFI bootloader and essential directories in an existing RAW image")
+    p.add_argument("--repo")
+    p.add_argument("--password-file", type=Path)
+    p.add_argument("--snapshot")
+    p.add_argument("--output", type=Path)
     p.add_argument("--cache-dir")
     p.add_argument("--size-gib", type=int, help="Override automatically estimated size")
     p.add_argument("--progress-file", type=Path, help="Private atomic status file")
@@ -634,6 +728,14 @@ def main():
     global PROGRESS_FILE, JOB_ID
     PROGRESS_FILE, JOB_ID = a.progress_file, a.job_id
     signal.signal(signal.SIGTERM, on_cancel)
+    if a.repair_raw is not None:
+        if any((a.repo, a.password_file, a.snapshot, a.output, a.size_gib,
+                a.progress_file, a.job_id)):
+            p.error("--repair-raw cannot be combined with export arguments")
+        repair_raw_image(a.repair_raw)
+        return
+    if not all((a.repo, a.password_file, a.snapshot, a.output)):
+        p.error("Export requires --repo, --password-file, --snapshot and --output")
     build(a.repo, a.password_file, a.snapshot, a.output, a.cache_dir, a.size_gib)
 
 
