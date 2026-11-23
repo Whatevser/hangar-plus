@@ -1386,7 +1386,10 @@
             async vhdRequest(args) {
                 if (!hasCockpit())
                     throw fail('Cockpit connection unavailable. The export continues independently.');
-                const text = await cockpit.spawn(['/usr/share/cockpit/hangar/libexec/hangar-vhd-job'].concat(args),
+                // Files from a GitHub archive can be 0644 inside the Cockpit plugin.
+                // Run with Python so a first upgrade needs no extra chmod.
+                const text = await cockpit.spawn(['/usr/bin/python3',
+                    '/usr/share/cockpit/hangar/libexec/hangar-vhd-job'].concat(args),
                     { superuser: 'require', err: 'message' });
                 return JSON.parse(text);
             },
