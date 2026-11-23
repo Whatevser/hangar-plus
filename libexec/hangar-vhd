@@ -338,6 +338,37 @@ def make_grub_cfg(version, root_uuid):
             f'}}\n')
 
 
+def make_efi_grub_locator(root_uuid):
+    """Tell signed/removable GRUB where the *image's* actual menu lives.
+
+    grub-install runs on the host against a temporary loop device and may
+    generate an ESP grub.cfg pointing at the host or a temporary UUID. That
+    leads to a bare grub> prompt once QEMU boots the exported disk.
+    Keep the distro-provided shim/GRUB EFI files (possibly signed); correct
+    only the removable boot path's config after grub-install has finished.
+    """
+    if not re.fullmatch(r"[0-9a-fA-F-]{8,36}", root_uuid):
+        abort("Invalid image root UUID for EFI boot configuration.")
+    return (
+        f"search --no-floppy --fs-uuid --set=root {root_uuid}\n"
+        "set prefix=($root)/boot/grub\n"
+        "configfile $prefix/grub.cfg\n"
+    )
+
+
+def install_efi_grub_locator(esp_dir, root_uuid):
+    boot = esp_dir / "EFI/BOOT"
+    if not boot.is_dir() or boot.is_symlink():
+        abort("GRUB removable EFI directory is missing or unsafe.")
+    locator = boot / "grub.cfg"
+    if locator.is_symlink():
+        abort("Refusing to replace symlinked EFI GRUB configuration.")
+    locator.write_text(make_efi_grub_locator(root_uuid), encoding="utf-8")
+    if locator.stat().st_size == 0:
+        abort("The EFI GRUB configuration is empty.")
+    print("Installed root-UUID GRUB locator in EFI/BOOT/grub.cfg.", flush=True)
+
+
 def patch_image_root(root, version, root_uuid, efi_uuid):
     # All changes stay on the loop-mounted image. Guard write destinations.
     (root / "etc/fstab").write_text(
@@ -440,6 +471,10 @@ def make_raw(restic, snapshot, raw, mount_dir, size):
                 stdout=subprocess.DEVNULL)
         if not (esp_dir / "EFI/BOOT/BOOTX64.EFI").is_file():
             abort("Virtual UEFI bootloader was not created.")
+        # Must run AFTER grub-install, which can overwrite the removable
+        # GRUB locator with one built for the temporary host-side loop mount.
+        # Do not replace signed shim/grubx64.efi binaries.
+        install_efi_grub_locator(esp_dir, root_uuid)
         emit("Syncing", "Flushing the virtual filesystems to disk…")
         command(["sync", "-f", esp_dir])
         command(["sync", "-f", mount_dir])
