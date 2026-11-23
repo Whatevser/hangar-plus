@@ -2036,3 +2036,68 @@ test('restore verifies contents and treats a picked filename as literal', async 
     }, () => c.runRestore(PLAN));
     assert.match(c.error.message, /no matching files/);
 });
+
+
+// --- durable VHDX job -----------------------------------------------------
+test('VHDX action uses short systemd job control rather than long cockpit spawn', async () => {
+    const c = attached();
+    c.moment = { id: 'a'.repeat(64) };
+    const calls = [];
+    globalThis.confirm = () => true;
+    globalThis.prompt = () => '/tmp/test.vhdx';
+    try {
+        await withCockpit((argv) => {
+            calls.push(argv);
+            if (argv[2] === 'start') return Promise.resolve(JSON.stringify({
+                state: 'running', job_id: 'one', phase: 'Restoring snapshot', percent: 0.42
+            }));
+            return Promise.resolve(JSON.stringify({ state: 'running', job_id: 'one' }));
+        }, async () => {
+            await c.createVhdx();
+            assert.equal(c.vhdIsRunning(), true);
+            assert.equal(c.vhdPercent(), 42);
+            assert.equal(c.busy, false, 'long-lived export must not occupy Logbook busy depth');
+            await c.abortVhdx();
+        });
+    } finally {
+        delete globalThis.confirm;
+        delete globalThis.prompt;
+    }
+    assert.deepEqual(calls[0].slice(0, 2), ['/usr/bin/python3',
+        '/usr/share/cockpit/hangar/libexec/hangar-vhd-job']);
+    assert.deepEqual(calls[0].slice(2, 5), ['start', 'nas', 'a'.repeat(64)]);
+    assert.deepEqual(calls[1].slice(2), ['cancel']);
+});
+
+test('VHDX state survives a new Logbook instance and displays a failure promptly', async () => {
+    const c = attached();
+    const response = { state: 'failed', output: '/tmp/failed.vhdx',
+        phase: 'Failed', detail: 'Missing mkfs.ext4',
+        error: 'Missing mkfs.ext4', job_id: 'old', started: 1000 };
+    await withCockpit(() => Promise.resolve(JSON.stringify(response)),
+        () => c.refreshVhdStatus());
+    assert.equal(c.vhdJob.state, 'failed');
+    assert.equal(c.vhdJob.error, 'Missing mkfs.ext4');
+    assert.equal(c.vhdIsRunning(), false);
+    assert.equal(c.vhdConnection, '');
+});
+
+test('Cockpit disconnect is not treated as VHDX export failure', async () => {
+    const c = attached();
+    c.vhdJob = { state: 'running', phase: 'Restoring snapshot', percent: 0.15 };
+    await withCockpit(() => Promise.reject({ problem: 'disconnected' }),
+        () => c.refreshVhdStatus());
+    assert.equal(c.vhdJob.state, 'running');
+    assert.match(c.vhdConnection, /continues|not stopped/i);
+});
+
+test('Logbook action colors and abort behavior are consistent', () => {
+    const html = UI.template();
+    assert.ok(html.includes('Abort VHDX'));
+    assert.ok(html.includes('vhdProgressText()'));
+    assert.ok(html.includes('vhdJob.error'));
+    assert.ok(html.includes('btn-danger'));
+    assert.ok(html.includes('btn-outline-danger'), 'delete remains red');
+    assert.ok(!html.includes('btn-outline-secondary'), 'neutral Logbook actions should be blue');
+});
+

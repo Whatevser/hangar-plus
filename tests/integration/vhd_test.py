@@ -116,6 +116,51 @@ class VirtualDiskTests(unittest.TestCase):
                              ["root unmount"])
         self.assertEqual([c[0] for c in calls], ["umount"])
 
+    def test_restic_stream_updates_private_status_and_shows_errors(self):
+        with tempfile.TemporaryDirectory() as d:
+            progress_path = Path(d) / "progress.json"
+            def fake_stream(args, callback, **kw):
+                self.assertIn("--json", args)
+                callback('{"message_type":"status","percent_done":0.42,'
+                         '"bytes_restored":420,"total_bytes":1000}')
+                callback('{"message_type":"error","error":{"message":"file cannot be read"}}')
+                callback('{"message_type":"status","percent_done":0.7,'
+                         '"bytes_restored":700,"total_bytes":1000}')
+            with patch.object(vhd, "PROGRESS_FILE", progress_path), \
+                 patch.object(vhd, "JOB_ID", "test-job"), \
+                 patch.object(vhd, "LAST_WARNING", None), \
+                 patch.object(vhd, "stream_command", side_effect=fake_stream):
+                vhd.restore_with_progress(["restic"], "latest", Path(d) / "restored")
+                report = __import__("json").loads(progress_path.read_text())
+                self.assertEqual(report["job_id"], "test-job")
+                self.assertEqual(report["percent"], 1)
+                self.assertEqual(report["warning"], "file cannot be read")
+
+    def test_streaming_qemu_conversion_reports_percent(self):
+        with tempfile.TemporaryDirectory() as d:
+            progress_path = Path(d) / "progress.json"
+            def fake_stream(args, callback, **kw):
+                self.assertIn("-p", args)
+                callback("    (18.43/100%)")
+                callback("    (73.13/100%)")
+            with patch.object(vhd, "PROGRESS_FILE", progress_path), \
+                 patch.object(vhd, "JOB_ID", "conversion"), \
+                 patch.object(vhd, "stream_command", side_effect=fake_stream):
+                vhd.convert_with_progress("in.raw", "out.vhdx", "vhdx")
+                report = __import__("json").loads(progress_path.read_text())
+                self.assertEqual(report["percent"], 1)
+                self.assertEqual(report["phase"], "Conversion complete")
+
+    def test_cancelled_command_terminates_its_process_group(self):
+        fake_proc = type("FakeProcess", (), {"communicate": lambda self, **kw:
+                            (_ for _ in ()).throw(vhd.ExportCancelled()),
+                            "pid": 42})()
+        with patch.object(vhd.subprocess, "Popen", return_value=fake_proc), \
+             patch.object(vhd, "terminate_process") as terminate:
+            with self.assertRaises(vhd.ExportCancelled):
+                vhd.command(["fake"], stdout=None)
+        terminate.assert_called_once_with(fake_proc)
+
     def test_root_bootloader_uses_image_only_and_no_nvram(self):
         # Exercise the full command sequence without actual root, loop devices,
         # grub-install, conversion or OS writes.
@@ -143,7 +188,10 @@ class VirtualDiskTests(unittest.TestCase):
                     self.assertIn("--no-nvram", args)
                     (root / "boot/efi/EFI/BOOT").mkdir(parents=True)
                     (root / "boot/efi/EFI/BOOT/BOOTX64.EFI").write_text("grub")
+            def do_restore(restic, snapshot, target):
+                cmd(["restic", "restore", snapshot, target])
             with patch.object(vhd, "command", side_effect=cmd), \
+                 patch.object(vhd, "restore_with_progress", side_effect=do_restore), \
                  patch.object(vhd, "check_output",
                               side_effect=["/dev/loop42", "550e8400-e29b-41d4-a716-446655440000", "ABCD-0123"]), \
                  patch.object(vhd, "verify_loop"), \

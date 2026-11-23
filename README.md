@@ -58,6 +58,20 @@ GRUB's UEFI removable bootloader into the **virtual** EFI partition. It never
 writes the physical host disk's bootloader, touches UEFI NVRAM, or calls
 `update-initramfs` on the host.
 
+**Live progress and Abort:** VHDX exports are managed by a separate, short-lived
+`hangar-vhd-job` controller. It starts a transient **systemd service** for the
+long-running build, so **closing the Cockpit tab, WebSocket disconnecting, or
+logging out does not cancel or interrupt the export**. The private status
+in `/var/lib/hangar/vhd/` records the active stage, real restic restore
+percentage/bytes and qemu-img conversion percentage, errors and final outcome.
+The Logbook polls that status and resumes displaying it when reopened.
+While a build runs the **Create VHDX** button becomes **Abort VHDX**;
+abort signals the Python worker, terminates its current child command, and
+unmounts/detaches its temporary virtual-disk loop device before completion.
+The original snapshot remains untouched. Status polling uses short Cockpit
+requests, so a disconnected browser loses the display, **not the work**.
+Only one active VHD export per host is allowed.
+
 The finished image is converted to **.vhdx** (recommended, dynamic/sparse)
 or legacy **.vhd** by `qemu-img`, the small image conversion utility from
 `qemu-utils`; **the QEMU emulator, KVM, or a virtual machine are not
@@ -80,6 +94,12 @@ The builder checks for them before writing any files and reports missing tools.
 It needs administrator privileges to mount temporary loop devices. The host
 must permit loop devices, and the destination needs scratch space for both
 the RAW image's populated ext4 filesystem and the final VHDX.
+
+Other manual operations have not yet been migrated to this detached job
+architecture: in particular **Create ISO**, manual restore, repository integrity
+checks, and pruning still use Cockpit-connected processes. Normal scheduled
+and manually started backup jobs already use systemd services. Do not assume
+that *every* lengthy action is WebSocket-independent yet.
 
 **Important limitations:** no boot test is performed or implied. Successful
 generation means the GPT/filesystems/GRUB/files were assembled, *not* that

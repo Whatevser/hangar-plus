@@ -11,6 +11,7 @@ import math
 import os
 import platform
 import re
+import signal
 import shutil
 import subprocess
 import sys
@@ -27,16 +28,183 @@ TOOLS = ("restic", "sfdisk", "losetup", "mkfs.vfat", "mkfs.ext4",
          "mount", "umount", "blkid", "grub-install", "qemu-img")
 
 
+class ExportCancelled(Exception):
+    """Graceful cancellation requested through the systemd service manager."""
+
+
+PROGRESS_FILE = None
+JOB_ID = None
+LAST_WARNING = None
+
+
+def emit(phase, detail, *, state="running", percent=None,
+         bytes_done=None, total_bytes=None, error=None):
+    """Write one atomic status record. All values remain available after logout."""
+    payload = {"state": state, "job_id": JOB_ID, "phase": phase,
+               "detail": detail, "percent": percent, "bytes_done": bytes_done,
+               "total_bytes": total_bytes, "error": error,
+               "warning": LAST_WARNING if state == "running" else None,
+               "updated": int(time.time())}
+    if PROGRESS_FILE is not None:
+        dest = PROGRESS_FILE
+        fd, name = tempfile.mkstemp(prefix=".vhd-progress-", dir=dest.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                os.fchmod(handle.fileno(), 0o600)
+                json.dump(payload, handle, ensure_ascii=False)
+                handle.write("\n")
+            os.replace(name, dest)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
+    if state != "running" or percent is None:
+        print("VHDX: " + detail, flush=True)
+
+
+def on_cancel(_signal, _frame):
+    raise ExportCancelled("Cancelled by user.")
+
+
 def abort(message):
     raise ValueError(message)
 
 
+def terminate_process(proc):
+    """Children get their own session: interrupt a command, not this cleanup."""
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+
+
 def command(args, **kwargs):
-    return subprocess.run([str(x) for x in args], check=True, **kwargs)
+    """subprocess.run equivalent with cancellable child process groups."""
+    data = kwargs.pop("input", None)
+    kwargs.pop("check", None)
+    if data is not None:
+        kwargs["stdin"] = subprocess.PIPE
+    proc = subprocess.Popen([str(x) for x in args], start_new_session=True, **kwargs)
+    try:
+        stdout, stderr = proc.communicate(input=data)
+    except ExportCancelled:
+        terminate_process(proc)
+        raise
+    if proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, args, stdout, stderr)
+    return subprocess.CompletedProcess(args, proc.returncode, stdout, stderr)
 
 
 def check_output(args, **kwargs):
-    return subprocess.check_output([str(x) for x in args], text=True, **kwargs).strip()
+    return command(args, text=True, stdout=subprocess.PIPE, **kwargs).stdout.strip()
+
+
+def stream_command(args, line_callback, *, env=None):
+    """Read restic JSON lines / qemu CR updates without blocking on the websocket."""
+    proc = subprocess.Popen([str(x) for x in args], stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1,
+                            env=env, start_new_session=True)
+    last_error = ""
+    try:
+        # Both newline-delimited restic JSON and carriage-return qemu progress.
+        buf = ""
+        while True:
+            char = proc.stdout.read(1)
+            if not char:
+                break
+            if char not in ("\n", "\r"):
+                if len(buf) < 8192:
+                    buf += char
+                continue
+            if buf:
+                line_callback(buf)
+                if buf.startswith("{"):
+                    try:
+                        record = json.loads(buf)
+                        if record.get("message_type") == "error":
+                            problem = record.get("error")
+                            last_error = str(problem.get("message") if isinstance(
+                                problem, dict) else record.get("message", ""))[:500]
+                    except ValueError:
+                        pass
+                elif not buf.startswith("("):
+                    last_error = buf[-500:]
+                buf = ""
+        if buf:
+            line_callback(buf)
+            last_error = buf[-500:]
+        rc = proc.wait()
+    except ExportCancelled:
+        terminate_process(proc)
+        raise
+    if rc:
+        raise RuntimeError("Command failed: " + str(args[0]) +
+                           (" — " + last_error if last_error else
+                            " (exit " + str(rc) + ")"))
+
+
+def restore_with_progress(restic, snapshot, target):
+    last_percent = -1
+
+    def consume(line):
+        nonlocal last_percent
+        global LAST_WARNING
+        try:
+            msg = json.loads(line)
+        except (ValueError, TypeError):
+            return
+        if msg.get("message_type") == "error":
+            detail = msg.get("error", {}).get("message") if isinstance(
+                msg.get("error"), dict) else msg.get("message", "Restore error")
+            LAST_WARNING = str(detail)[:500]
+            emit("Restoring snapshot", "Restic reported a file error; see warning.")
+            print("Restic: " + LAST_WARNING, file=sys.stderr, flush=True)
+        if msg.get("message_type") not in ("status", "summary"):
+            return
+        fraction = msg.get("percent_done")
+        if fraction is None and msg.get("message_type") == "summary":
+            fraction = 1
+        if not isinstance(fraction, (int, float)) or not math.isfinite(fraction):
+            return
+        fraction = max(0, min(1, fraction))
+        # Progress file updates every new percent (journal stays compact).
+        if int(fraction * 100) == last_percent:
+            return
+        last_percent = int(fraction * 100)
+        done = msg.get("bytes_restored")
+        total = msg.get("total_bytes")
+        emit("Restoring snapshot", f"Restoring files: {last_percent}%",
+             percent=fraction, bytes_done=done, total_bytes=total)
+    env = dict(os.environ)
+    env["RESTIC_PROGRESS_FPS"] = "1"
+    stream_command(restic + ["restore", "--json", snapshot, "--target", target],
+                   consume, env=env)
+    emit("Restore complete", "Snapshot contents restored.", percent=1)
+
+
+def convert_with_progress(raw, target, fmt):
+    last_percent = -1
+
+    def consume(line):
+        nonlocal last_percent
+        match = re.search(r"\((\d+(?:\.\d+)?)/100%\)", line)
+        if not match:
+            return
+        n = min(100, max(0, int(float(match.group(1)))))
+        if n == last_percent:
+            return
+        last_percent = n
+        emit("Converting to " + fmt.upper(), f"Converting disk image: {n}%",
+             percent=n / 100)
+    stream_command(["qemu-img", "convert", "-p", "-f", "raw", "-O", fmt,
+                    "-S", "4k", raw, target], consume)
+    emit("Conversion complete", "Disk image conversion finished.", percent=1)
 
 
 def output_format(path):
@@ -229,7 +397,7 @@ def make_raw(restic, snapshot, raw, mount_dir, size):
     fd = os.open(raw, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.truncate(size * GIB)
-    print(f"Partitioning NEW {size} GiB virtual disk...", flush=True)
+    emit("Partitioning", f"Creating a {size} GiB GPT virtual disk…")
     command(["sfdisk", "--wipe", "always", raw],
             input=partition_script(), text=True, stdout=subprocess.DEVNULL)
     loop = None
@@ -252,16 +420,16 @@ def make_raw(restic, snapshot, raw, mount_dir, size):
             abort("Could not read new virtual partition UUIDs.")
         command(["mount", "-t", "ext4", linux, mount_dir])
         root_mounted = True
-        print("Restoring complete snapshot into virtual ext4 root...", flush=True)
-        command(restic + ["restore", snapshot, "--target", mount_dir],
-                stdout=subprocess.DEVNULL)
+        emit("Restoring snapshot", "Restoring complete snapshot into virtual ext4 root…")
+        restore_with_progress(restic, snapshot, mount_dir)
+        emit("Preparing boot", "Checking kernel and preparing the boot configuration…")
         version = check_restored_system(mount_dir)
         patch_image_root(mount_dir, version, root_uuid, efi_uuid)
         esp_dir = mount_dir / "boot/efi"
         esp_dir.mkdir(parents=True, exist_ok=True)
         command(["mount", "-t", "vfat", efi, esp_dir])
         efi_mounted = True
-        print("Installing UEFI fallback GRUB exclusively into virtual disk...", flush=True)
+        emit("Installing GRUB", "Installing the UEFI bootloader into the virtual disk…")
         command(["grub-install", "--target=x86_64-efi",
                  "--efi-directory=" + str(esp_dir),
                  "--boot-directory=" + str(mount_dir / "boot"),
@@ -269,10 +437,18 @@ def make_raw(restic, snapshot, raw, mount_dir, size):
                 stdout=subprocess.DEVNULL)
         if not (esp_dir / "EFI/BOOT/BOOTX64.EFI").is_file():
             abort("Virtual UEFI bootloader was not created.")
+        emit("Syncing", "Flushing the virtual filesystems to disk…")
         command(["sync", "-f", esp_dir])
         command(["sync", "-f", mount_dir])
     finally:
-        problems = cleanup_loop(loop, mount_dir, efi_mounted, root_mounted)
+        # Once cancellation has started cleanup, a second SIGTERM must not
+        # interrupt unmount/detach and leave the host with busy loop devices.
+        previous_handler = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        try:
+            problems = cleanup_loop(loop, mount_dir, efi_mounted, root_mounted)
+        finally:
+            signal.signal(signal.SIGTERM, previous_handler)
         if problems:
             # Caller must preserve the temporary directory on cleanup failure.
             raise RuntimeError("FAILED_TO_DETACH: " + ", ".join(problems))
@@ -303,6 +479,7 @@ def publish_image(staged, output):
 def build(repo, password_file, snapshot, output, cache_dir=None, size=None):
     if not SNAPSHOT.fullmatch(snapshot):
         abort("Use 'latest' or a full 64-character snapshot ID.")
+    emit("Checking", "Checking VHDX prerequisites and snapshot size…")
     fmt = preflight(output)
     restic = restic_base(repo, password_file, cache_dir)
     logical = restore_bytes(restic, snapshot)
@@ -327,16 +504,16 @@ def build(repo, password_file, snapshot, output, cache_dir=None, size=None):
             if str(exc).startswith("FAILED_TO_DETACH:"):
                 preserve = True
             raise
-        print(f"Converting virtual disk to {output.suffix.upper()} (qemu-img only)...",
-              flush=True)
-        command(["qemu-img", "convert", "-f", "raw", "-O", fmt, "-S", "4k",
-                 raw, target])
+        emit("Converting to VHDX", "Converting the virtual disk image…")
+        convert_with_progress(raw, target, fmt)
         command(["qemu-img", "info", "-f", fmt, target],
                 stdout=subprocess.DEVNULL)
         if not target.is_file() or target.stat().st_size == 0:
             abort("Conversion produced an empty virtual disk.")
+        emit("Saving", "Publishing completed image without overwriting existing files…")
         publish_image(target, output)
-        print("Bootable UEFI disk image created: " + str(output), flush=True)
+        emit("Completed", "Bootable UEFI disk image created: " + str(output),
+             state="completed", percent=1)
         print("Boot has NOT been tested. Secure Boot is unsupported. "
               "The image contains decrypted private data.", flush=True)
     finally:
@@ -356,14 +533,27 @@ def main():
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--cache-dir")
     p.add_argument("--size-gib", type=int, help="Override automatically estimated size")
+    p.add_argument("--progress-file", type=Path, help="Private atomic status file")
+    p.add_argument("--job-id", help="Identifier for a durable Hangar export")
     a = p.parse_args()
+    global PROGRESS_FILE, JOB_ID
+    PROGRESS_FILE, JOB_ID = a.progress_file, a.job_id
+    signal.signal(signal.SIGTERM, on_cancel)
     build(a.repo, a.password_file, a.snapshot, a.output, a.cache_dir, a.size_gib)
 
 
 if __name__ == "__main__":
     try:
         main()
+    except ExportCancelled as exc:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        emit("Cancelled", "The VHDX export was cancelled.", state="cancelled")
+        print("Hangar bootable disk: " + str(exc), file=sys.stderr)
+        sys.exit(130)
     except (ValueError, OSError, RuntimeError, subprocess.CalledProcessError,
             json.JSONDecodeError) as exc:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        emit("Failed", "VHDX export failed: " + str(exc), state="failed",
+             error=str(exc))
         print("Hangar bootable disk: " + str(exc), file=sys.stderr)
         sys.exit(1)
