@@ -2259,3 +2259,18 @@ test('the import dialog locks its backend to local and uses a distinct submit la
     assert.match(MODAL, /mode === 'import'.*'Import repository'/);
     assert.match(Ui.TEMPLATE, /Import existing/);
 });
+
+
+test('Repositories actions are blue except Refresh', () => {
+    const html = Ui.template ? Ui.template() : Ui.TEMPLATE;
+    assert.ok(html && html.includes('Refresh repositories'));
+    const refreshAt = html.indexOf('aria-label="Refresh repositories"');
+    assert.ok(refreshAt > 0);
+    assert.ok(html.slice(refreshAt - 120, refreshAt).includes('btn-outline-secondary'));
+    assert.ok(html.includes('>Remove</button>'));
+    assert.ok(!html.includes('btn-outline-danger'));
+    const withoutRefresh = html.replace(
+        'btn btn-sm btn-outline-secondary" @click="refresh()"',
+        'btn btn-sm btn-primary" @click="refresh()"');
+    assert.ok(!withoutRefresh.includes('btn-outline-secondary'));
+});
