@@ -44,7 +44,8 @@ class MissingHelperTests(unittest.TestCase):
                  patch.object(updater, "COMMIT_FILE", root / "installed-commit"), \
                  patch.object(updater, "LOCK_FILE", str(root / "update.lock")), \
                  patch.object(updater, "CONF", root), \
-                 patch.object(updater, "latest_commit", return_value=SHA):
+                 patch.object(updater, "latest_commit", return_value=SHA), \
+                 patch.object(updater.os, "geteuid", return_value=0):
                 state = updater.state(include_latest=True)
                 self.assertTrue(state["available"])
                 self.assertEqual(updater.missing_executables(), ["hangar-vhd"])
