@@ -250,7 +250,7 @@ class VirtualDiskTests(unittest.TestCase):
                 vhd.command(["fake"], stdout=None)
         terminate.assert_called_once_with(fake_proc)
 
-    def test_root_bootloader_installs_signed_efi_and_image_locators(self):
+    def test_root_bootloader_embeds_image_locator_into_removable_efi(self):
         # Exercise the full command sequence without actual root, loop devices,
         # grub-install, conversion or OS writes.
         with tempfile.TemporaryDirectory() as d:
@@ -271,14 +271,15 @@ class VirtualDiskTests(unittest.TestCase):
                     (root / "boot").mkdir(exist_ok=True)
                     (root / "boot/vmlinuz-6.8.0").write_text("kernel")
                     (root / "boot/initrd.img-6.8.0").write_text("initrd")
-                if op == "grub-install":
-                    self.assertIn("--target=x86_64-efi", args)
-                    self.assertIn("--removable", args)
-                    self.assertIn("--no-nvram", args)
-                    self.assertTrue(any(x.startswith("--efi-directory=") for x in args))
-                    boot = root / "boot/efi/EFI/BOOT"
-                    boot.mkdir(parents=True)
-                    (boot / "BOOTX64.EFI").write_bytes(b"MZ" + bytes(2046))
+                if op == "grub-mkstandalone":
+                    self.assertIn("--format=x86_64-efi", args)
+                    self.assertTrue(any(x.startswith("--modules=") for x in args))
+                    self.assertIn("boot/grub/grub.cfg=" +
+                                  str(root / "boot/efi/EFI/BOOT/grub.cfg"), args)
+                    loader = Path(next(a.split("=", 1)[1] for a in args
+                                       if a.startswith("--output=")))
+                    self.assertEqual(loader.name, "BOOTX64.EFI.hangar-new")
+                    loader.write_bytes(b"MZ" + bytes(2046))
             def do_restore(restic, snapshot, target):
                 cmd(["restic", "restore", snapshot, target])
             with patch.object(vhd, "command", side_effect=cmd), \
@@ -291,11 +292,16 @@ class VirtualDiskTests(unittest.TestCase):
                 vhd.make_raw(["restic"], "latest", raw, root, 16)
             self.assertEqual([a[0] for a in calls],
                              ["sfdisk", "mkfs.vfat", "mkfs.ext4", "mount",
-                              "restic", "mount", "grub-install", "sync", "sync"])
+                              "restic", "mount", "grub-mkstandalone", "sync", "sync"])
             esp_cfg = (root / "boot/efi/EFI/BOOT/grub.cfg").read_text()
             self.assertIn("550e8400-e29b-41d4-a716-446655440000", esp_cfg)
             self.assertNotIn("set prefix=", esp_cfg)
             self.assertIn("configfile ($root)/boot/grub/grub.cfg", esp_cfg)
+            self.assertEqual((root / "boot/efi/EFI/BOOT/BOOTX64.EFI").stat().st_size,
+                             2048)
+            self.assertFalse((root / "boot/efi/EFI/BOOT/BOOTX64.EFI.hangar-new").exists())
+            # Sidecar config is retained for debugging and alternative loaders;
+            # standalone EFI's embedded copy is what guarantees automatic boot.
             # The signed Ubuntu GRUB binary can look under EFI/ubuntu even
             # when launched via the removable EFI/BOOT path.
             self.assertEqual(esp_cfg,
@@ -304,6 +310,66 @@ class VirtualDiskTests(unittest.TestCase):
                 (root / "boot/efi/EFI/debian/grub.cfg").read_text())
             self.assertIn("550e8400-e29b-41d4-a716-446655440000",
                           (root / "boot/grub/grub.cfg").read_text())
+
+    def test_standalone_grub_replaces_old_loader_only_after_validation(self):
+        with tempfile.TemporaryDirectory() as d:
+            esp = Path(d)
+            boot = esp / "EFI/BOOT"
+            boot.mkdir(parents=True)
+            loader = boot / "BOOTX64.EFI"
+            loader.write_bytes(b"MZoriginal signed loader")
+            uuid = "550e8400-e29b-41d4-a716-446655440000"
+            commands = []
+
+            def valid_build(args, **kwargs):
+                commands.append(args)
+                staged = Path(next(arg.split("=", 1)[1] for arg in args
+                                   if arg.startswith("--output=")))
+                self.assertEqual(staged.parent, boot)
+                self.assertTrue((boot / "grub.cfg").is_file())
+                staged.write_bytes(b"MZ" + bytes(2046))
+
+            with patch.object(vhd, "command", side_effect=valid_build):
+                vhd.install_standalone_grub(esp, uuid)
+            self.assertEqual(loader.read_bytes(), b"MZ" + bytes(2046))
+            self.assertFalse((boot / "BOOTX64.EFI.hangar-new").exists())
+            self.assertEqual(commands[0][0], "grub-mkstandalone")
+            self.assertIn("boot/grub/grub.cfg=" + str(boot / "grub.cfg"),
+                          commands[0])
+            self.assertIn(uuid, (boot / "grub.cfg").read_text())
+
+    def test_invalid_standalone_grub_does_not_destroy_existing_loader(self):
+        with tempfile.TemporaryDirectory() as d:
+            esp = Path(d)
+            boot = esp / "EFI/BOOT"
+            boot.mkdir(parents=True)
+            loader = boot / "BOOTX64.EFI"
+            original = b"MZoriginal signed loader"
+            loader.write_bytes(original)
+
+            def broken_build(args, **kwargs):
+                staged = Path(next(arg.split("=", 1)[1] for arg in args
+                                   if arg.startswith("--output=")))
+                staged.write_bytes(b"NO" + bytes(2046))
+
+            with patch.object(vhd, "command", side_effect=broken_build):
+                with self.assertRaisesRegex(ValueError, "invalid executable header"):
+                    vhd.install_standalone_grub(
+                        esp, "550e8400-e29b-41d4-a716-446655440000")
+            self.assertEqual(loader.read_bytes(), original)
+            self.assertFalse((boot / "BOOTX64.EFI.hangar-new").exists())
+
+    def test_standalone_grub_refuses_symlinked_efi_loader(self):
+        with tempfile.TemporaryDirectory() as d:
+            esp = Path(d)
+            boot = esp / "EFI/BOOT"
+            boot.mkdir(parents=True)
+            (boot / "BOOTX64.EFI").symlink_to(Path(d) / "external")
+            with patch.object(vhd, "command") as command:
+                with self.assertRaisesRegex(ValueError, "unsafe existing EFI bootloader"):
+                    vhd.install_standalone_grub(
+                        esp, "550e8400-e29b-41d4-a716-446655440000")
+            command.assert_not_called()
 
     def test_missing_runtime_mountpoints_rebuilt_inside_image_only(self):
         with tempfile.TemporaryDirectory() as d:
