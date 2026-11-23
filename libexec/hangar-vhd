@@ -345,8 +345,8 @@ def make_efi_grub_locator(root_uuid):
         abort("Invalid image root UUID for EFI boot configuration.")
     return (
         f"search --no-floppy --fs-uuid --set=root {root_uuid}\n"
-        # Keep GRUB's module prefix: packaged signed EFI loaders may have
-        # module paths different from the restored /boot/grub location.
+        # Keep standalone GRUB's embedded module prefix; the restored system
+        # may not contain matching EFI GRUB modules under /boot/grub.
         "configfile ($root)/boot/grub/grub.cfg\n"
     )
 
@@ -390,10 +390,10 @@ def install_standalone_grub(esp_dir, root_uuid):
 
 
 def install_efi_grub_locator(esp_dir, root_uuid):
-    """Support signed distro GRUB prefix paths without modifying EFI binaries.
+    """Write optional sidecar locators for alternate EFI loaders and debugging.
 
-    On Ubuntu/Mint, signed GRUB may search EFI/ubuntu/grub.cfg even when
-    the loader is installed via --removable into EFI/BOOT.
+    The standalone BOOTX64.EFI embeds the EFI/BOOT copy directly and does not
+    need to discover these files via a host-specific GRUB prefix.
     """
     efi = esp_dir / "EFI"
     if efi.is_symlink() or not efi.is_dir():
@@ -411,7 +411,7 @@ def install_efi_grub_locator(esp_dir, root_uuid):
         if locator.is_symlink() or (locator.exists() and not locator.is_file()):
             abort("Refusing to replace unsafe EFI GRUB configuration: " + str(locator))
         locator.write_text(payload, encoding="utf-8")
-    print("Configured signed GRUB locator in EFI/BOOT and vendor EFI directories.",
+    print("Configured EFI GRUB UUID locators in fallback and vendor directories.",
           flush=True)
 
 
@@ -725,8 +725,8 @@ def build(repo, password_file, snapshot, output, cache_dir=None, size=None):
         emit("Completed", "Bootable UEFI " + ("RAW" if fmt == "raw" else output.suffix.upper()) +
              " disk image created: " + str(output),
              state="completed", percent=1)
-        print("Boot has NOT been tested. Secure Boot requires signed EFI "
-              "binaries from the host distribution; availability varies. "
+        print("Boot has NOT been tested. Disable guest Secure Boot: Hangar's "
+              "self-contained EFI GRUB executable is unsigned. "
               "The image contains decrypted private data.", flush=True)
     finally:
         if work and not preserve:
