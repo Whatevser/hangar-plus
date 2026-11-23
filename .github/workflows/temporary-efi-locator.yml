@@ -1,0 +1,17 @@
+name: Temporary EFI locator regression
+on:
+  push:
+    branches: [fix/standalone-efi-boot-menu]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - run: |
+          python3 -m py_compile libexec/hangar-vhd libexec/hangar-portable
+          python3 tests/integration/vhd_test.py -v
+          python3 tests/integration/vhd_job_test.py -v
+          npm run test:unit
+          npm run test:smoke
