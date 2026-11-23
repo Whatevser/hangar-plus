@@ -274,7 +274,7 @@ class VirtualDiskTests(unittest.TestCase):
                 if op == "grub-mkstandalone":
                     self.assertIn("--format=x86_64-efi", args)
                     self.assertTrue(any(x.startswith("--modules=") for x in args))
-                    self.assertIn("boot/grub/grub.cfg=" +
+                    self.assertIn("/boot/grub/grub.cfg=" +
                                   str(root / "boot/efi/EFI/BOOT/grub.cfg"), args)
                     loader = Path(next(a.split("=", 1)[1] for a in args
                                        if a.startswith("--output=")))
@@ -334,7 +334,7 @@ class VirtualDiskTests(unittest.TestCase):
             self.assertEqual(loader.read_bytes(), b"MZ" + bytes(2046))
             self.assertFalse((boot / "BOOTX64.EFI.hangar-new").exists())
             self.assertEqual(commands[0][0], "grub-mkstandalone")
-            self.assertIn("boot/grub/grub.cfg=" + str(boot / "grub.cfg"),
+            self.assertIn("/boot/grub/grub.cfg=" + str(boot / "grub.cfg"),
                           commands[0])
             self.assertIn(uuid, (boot / "grub.cfg").read_text())
 
