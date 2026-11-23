@@ -349,8 +349,11 @@ def make_efi_grub_locator(root_uuid):
         abort("Invalid image root UUID for EFI boot configuration.")
     return (
         f"search --no-floppy --fs-uuid --set=root {root_uuid}\n"
-        "set prefix=($root)/boot/grub\n"
-        "configfile $prefix/grub.cfg\n"
+        # Do NOT switch GRUB's $prefix to the restored disk. grub-mkstandalone
+        # bundles its modules under (memdisk)/boot/grub, while the snapshot may
+        # lack a /boot/grub/x86_64-efi modules directory. Setting the disk as
+        # prefix makes even simple commands fail to load their modules.
+        "configfile ($root)/boot/grub/grub.cfg\n"
     )
 
 
