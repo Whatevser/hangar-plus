@@ -65,9 +65,18 @@ jobs:
           dd if="$temp/esp.img" of="$temp/disk.raw" bs=1M seek=1 conv=notrunc status=none
           dd if="$temp/root.img" of="$temp/disk.raw" bs=1M seek=65 conv=notrunc status=none
           firmware=/usr/share/OVMF/OVMF_CODE_4M.fd
-          if [ ! -f "$firmware" ]; then firmware=/usr/share/OVMF/OVMF_CODE.fd; fi
+          vars=/usr/share/OVMF/OVMF_VARS_4M.fd
+          if [ ! -f "$firmware" ]; then
+            firmware=/usr/share/OVMF/OVMF_CODE.fd
+            vars=/usr/share/OVMF/OVMF_VARS.fd
+          fi
+          echo "OVMF: $firmware and $vars"
+          find /usr/share/OVMF -name '*.fd' -printf '%p %s bytes\n'
+          cp "$vars" "$temp/ovmf-vars.fd"
           set +e
-          timeout 45s qemu-system-x86_64 -machine q35,accel=tcg -m 256 -bios "$firmware" \
+          timeout 45s qemu-system-x86_64 -machine q35,accel=tcg -m 256 \
+            -drive "if=pflash,format=raw,unit=0,readonly=on,file=$firmware" \
+            -drive "if=pflash,format=raw,unit=1,file=$temp/ovmf-vars.fd" \
             -drive "file=$temp/disk.raw,format=raw,if=virtio" \
             -boot order=c -serial stdio -display none -monitor none -no-reboot \
             > "$temp/serial.log" 2>&1
