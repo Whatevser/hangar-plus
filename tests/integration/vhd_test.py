@@ -145,7 +145,7 @@ class VirtualDiskTests(unittest.TestCase):
                     (root / "boot/efi/EFI/BOOT/BOOTX64.EFI").write_text("grub")
             with patch.object(vhd, "command", side_effect=cmd), \
                  patch.object(vhd, "check_output",
-                              side_effect=["/dev/loop42", "/fake.raw", "r-uuid", "e-uuid"]), \
+                              side_effect=["/dev/loop42", "550e8400-e29b-41d4-a716-446655440000", "ABCD-0123"]), \
                  patch.object(vhd, "verify_loop"), \
                  patch.object(vhd, "partitions", return_value=(Path("/dev/loop42p1"), Path("/dev/loop42p2"))), \
                  patch.object(vhd, "cleanup_loop", return_value=[]):
