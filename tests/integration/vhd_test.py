@@ -293,8 +293,8 @@ class VirtualDiskTests(unittest.TestCase):
                               "restic", "mount", "grub-mkstandalone", "sync", "sync"])
             esp_cfg = (root / "boot/efi/EFI/BOOT/grub.cfg").read_text()
             self.assertIn("550e8400-e29b-41d4-a716-446655440000", esp_cfg)
-            self.assertIn("set prefix=($root)/boot/grub", esp_cfg)
-            self.assertIn("configfile $prefix/grub.cfg", esp_cfg)
+            self.assertNotIn("set prefix=", esp_cfg)
+            self.assertIn("configfile ($root)/boot/grub/grub.cfg", esp_cfg)
             self.assertIn("550e8400-e29b-41d4-a716-446655440000",
                           (root / "boot/grub/grub.cfg").read_text())
 
@@ -341,8 +341,8 @@ class VirtualDiskTests(unittest.TestCase):
             vhd.install_efi_grub_locator(esp, "550e8400-e29b-41d4-a716-446655440000")
             cfg = (boot / "grub.cfg").read_text()
             self.assertIn("search --no-floppy --fs-uuid --set=root", cfg)
-            self.assertIn("set prefix=($root)/boot/grub", cfg)
-            self.assertIn("configfile $prefix/grub.cfg", cfg)
+            self.assertNotIn("set prefix=", cfg)
+            self.assertIn("configfile ($root)/boot/grub/grub.cfg", cfg)
             self.assertNotIn("/dev/loop", cfg)
 
     def test_efi_locator_rejects_bad_uuid_and_symlink(self):
@@ -364,7 +364,7 @@ class VirtualDiskTests(unittest.TestCase):
             "a1f8f726-22f9-49c0-a799-4ddbaef579fb")
         self.assertNotEqual(a, b)
         self.assertIn("search --no-floppy --fs-uuid", a)
-        self.assertIn("configfile $prefix/grub.cfg", a)
+        self.assertIn("configfile ($root)/boot/grub/grub.cfg", a)
         self.assertNotIn("/dev/loop", a)
 
 
