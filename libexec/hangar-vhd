@@ -21,6 +21,7 @@ from pathlib import Path
 GIB = 1024 ** 3
 EFI_MIB = 512
 SNAPSHOT = re.compile(r"(?:latest|[0-9a-fA-F]{64})\Z")
+KERNEL_VERSION = re.compile(r"[A-Za-z0-9._+-]+\Z")
 LOOP = re.compile(r"/dev/loop[0-9]+\Z")
 TOOLS = ("restic", "sfdisk", "losetup", "mkfs.vfat", "mkfs.ext4",
          "mount", "umount", "blkid", "grub-install", "qemu-img")
@@ -111,7 +112,7 @@ def kernel_files(root):
     for kernel in boot.glob("vmlinuz-*"):
         version = kernel.name[len("vmlinuz-"):]
         initrd = boot / ("initrd.img-" + version)
-        if not version or kernel.is_symlink() or not kernel.is_file():
+        if not KERNEL_VERSION.fullmatch(version) or kernel.is_symlink() or not kernel.is_file():
             continue
         if initrd.is_symlink() or not initrd.is_file():
             continue
@@ -119,8 +120,9 @@ def kernel_files(root):
     if not candidates:
         abort("Snapshot lacks matching /boot/vmlinuz-* and /boot/initrd.img-*.")
     # sort numeric runs numerically (6.10 comes after 6.9)
-    candidates.sort(key=lambda ver: [(int(s) if s.isdigit() else s)
-                                      for s in re.findall(r"\d+|\D+", ver)])
+    candidates.sort(key=lambda ver: [(0, int(part)) if part.isdigit()
+                                      else (1, part)
+                                      for part in re.findall(r"\d+|\D+", ver)])
     return candidates[-1]
 
 
