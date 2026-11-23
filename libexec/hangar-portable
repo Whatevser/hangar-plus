@@ -142,22 +142,33 @@ fi
 exec restic -r "$here" --password-file "$key" "$@"
 """
 
-# Preserve an exact copy of the shipped v2 script to safely upgrade access
-# kits without touching third-party or user-modified scripts.
-ACCESS_SCRIPT = ACCESS_SCRIPT_V2.replace(
+# Preserve exact published copies of both v2 and v3 access scripts; they may
+# exist beside a repository and must remain safe to upgrade to RAW-capable v4.
+ACCESS_SCRIPT_V3 = ACCESS_SCRIPT_V2.replace(
     "Hangar standalone access kit v2", "Hangar standalone access kit v3"
 ).replace(
     'exec restic -r "$here" --password-file "$key" "$@"',
-    '''if [ "$#" -gt 0 ] && { [ "$1" = "raw" ] || [ "$1" = "img" ] || [ "$1" = "vhd" ] || [ "$1" = "vhdx" ]; }; then
+    '''if [ "$#" -gt 0 ] && { [ "$1" = "vhd" ] || [ "$1" = "vhdx" ]; }; then
     shift
     if [ "$#" -ne 2 ]; then
-        echo "Usage: $0 raw <latest|snapshot-id> </absolute/output.raw> (also: img, vhdx, vhd)" >&2
+        echo "Usage: $0 vhdx <latest|snapshot-id> </absolute/output.vhdx>" >&2
         exit 2
     fi
     exec python3 "$here/hangar-vhd.py" --repo "$here" --password-file "$key" --snapshot "$1" --output "$2"
 fi
 exec restic -r "$here" --password-file "$key" "$@"'''
 )
+
+ACCESS_SCRIPT = ACCESS_SCRIPT_V3.replace(
+    "Hangar standalone access kit v3", "Hangar standalone access kit v4"
+).replace(
+    'if [ "$#" -gt 0 ] && { [ "$1" = "vhd" ] || [ "$1" = "vhdx" ]; }; then',
+    'if [ "$#" -gt 0 ] && { [ "$1" = "raw" ] || [ "$1" = "img" ] || [ "$1" = "vhd" ] || [ "$1" = "vhdx" ]; }; then'
+).replace(
+    'Usage: $0 vhdx <latest|snapshot-id> </absolute/output.vhdx>',
+    'Usage: $0 raw <latest|snapshot-id> </absolute/output.raw> (also: img, vhdx, vhd)'
+)
+
 
 # Only copies of Hangar's generated helper may be refreshed automatically.
 BUILDER_HEADER = '#!/usr/bin/env python3\n"""Create an offline, UEFI-bootable VHDX/VHD'
@@ -220,7 +231,7 @@ def export_access_kit(repo_id):
         abort("Existing access-kit key does not match Hangar's password. Not overwriting.")
     if script_dest.exists():
         saved = script_dest.read_text(encoding="utf-8")
-        if saved not in (ACCESS_SCRIPT, ACCESS_SCRIPT_V2, LEGACY_ACCESS_SCRIPT):
+        if saved not in (ACCESS_SCRIPT, ACCESS_SCRIPT_V3, ACCESS_SCRIPT_V2, LEGACY_ACCESS_SCRIPT):
             abort("An unrecognized access script already exists. Not overwriting it.")
     else:
         saved = None
