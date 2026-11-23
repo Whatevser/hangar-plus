@@ -1483,7 +1483,7 @@
         '    <h5 class="mb-0 flex-grow-1">Repositories</h5>',
         '    <button type="button" class="btn btn-sm btn-outline-secondary" @click="refresh()"',
         '            :disabled="loading" aria-label="Refresh repositories">Refresh</button>',
-        '    <button type="button" class="btn btn-sm btn-outline-secondary" @click="openImport()">Import existing…</button>',
+        '    <button type="button" class="btn btn-sm btn-primary" @click="openImport()">Import existing…</button>',
         '    <button type="button" class="btn btn-sm btn-primary" @click="openAdd()">Add repository</button>',
         '  </div>',
 
@@ -1503,7 +1503,7 @@
         '        <button type="button" class="btn btn-sm btn-primary" x-show="alertActionLabel()"',
         '                :disabled="loading" @click="remediateAlert()"',
         '                x-text="alertActionLabel()"></button>',
-        '        <button type="button" class="btn btn-sm btn-outline-secondary" @click="alert = null"',
+        '        <button type="button" class="btn btn-sm btn-primary" @click="alert = null"',
         '                aria-label="Dismiss message">Dismiss</button>',
         '      </div>',
         '    </div>',
@@ -1557,18 +1557,18 @@
         // Each button repeats its verb for every row, so the accessible name has to
         // name the repository too — "Test" five times over is unusable by voice or
         // by screen reader.
-        '            <button type="button" class="btn btn-outline-secondary" @click="testConnection(row)"',
+        '            <button type="button" class="btn btn-primary" @click="testConnection(row)"',
         '                    :disabled="!!row.busy" :aria-label="\'Test \' + row.title">Test</button>',
-        '            <button type="button" class="btn btn-outline-secondary" @click="check(row)"',
+        '            <button type="button" class="btn btn-primary" @click="check(row)"',
         '                    :disabled="!!row.busy" :aria-label="\'Check \' + row.title">Check</button>',
-        '            <button type="button" class="btn btn-outline-secondary" @click="unlock(row)"',
+        '            <button type="button" class="btn btn-primary" @click="unlock(row)"',
         '                    :disabled="!!row.busy" :aria-label="\'Unlock \' + row.title">Unlock</button>',
-        '            <button type="button" class="btn btn-outline-secondary" x-show="row.repo.kind === \'local\'"' +
+        '            <button type="button" class="btn btn-primary" x-show="row.repo.kind === \'local\'"' +
 '                    title="Optionally place a plaintext restic key and access script alongside this local repository."' +
 '                    @click="createAccessKit(row)" :disabled="!!row.busy">Access kit</button>',
-'            <button type="button" class="btn btn-outline-secondary" @click="openEdit(row)"',
+'            <button type="button" class="btn btn-primary" @click="openEdit(row)"',
         '                    :disabled="!!row.busy" :aria-label="\'Edit \' + row.title">Edit</button>',
-        '            <button type="button" class="btn btn-outline-danger" @click="remove(row)"',
+        '            <button type="button" class="btn btn-primary" @click="remove(row)"',
         '                    :disabled="!!row.busy" :aria-label="\'Remove \' + row.title">Remove</button>',
         '          </div>',
         '        </div>',
@@ -1591,7 +1591,7 @@
         '                    x-show="row.alert && row.alert.actionLabel"',
         '                    :disabled="!!row.busy"',
         '                    @click="remediate(row)" x-text="row.alert && row.alert.actionLabel"></button>',
-        '            <button type="button" class="btn btn-sm btn-outline-secondary"',
+        '            <button type="button" class="btn btn-sm btn-primary"',
         '                    @click="row.alert = null" aria-label="Dismiss message">Dismiss</button>',
         '          </div>',
         '        </div>',
