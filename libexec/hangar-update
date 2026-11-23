@@ -67,7 +67,8 @@ def state(include_latest=False):
     result = {"installed": current, "automatic": is_enabled()}
     if include_latest:
         latest = latest_commit()
-        result.update({"latest": latest, "available": current != latest})
+        result.update({"latest": latest,
+                       "available": current != latest or bool(missing_executables())})
     return result
 
 
@@ -125,6 +126,34 @@ def atomic_copy(source, dest, mode=0o755):
         temporary.unlink(missing_ok=True)
 
 
+def missing_executables():
+    """A previous updater may have installed a new UI but skipped new helpers.
+
+    Version SHA alone doesn't prove that the separate libexec files were
+    installed. Do not download or modify anything while checking status.
+    """
+    return [name for name in EXECUTABLES
+            if not (EXEC / name).is_file()]
+
+
+def repair_missing_executables():
+    """Install only absent helpers from the already-downloaded Cockpit plugin.
+
+    Called under the same update lock as normal updates. Existing executables
+    are deliberately not replaced when the installed commit matches.
+    """
+    missing = missing_executables()
+    for name in missing:
+        source = PLUGIN / "libexec" / name
+        if not source.is_file() or source.is_symlink():
+            raise RuntimeError(
+                "Installed Hangar package lacks " + name +
+                "; run a full update or reinstall Hangar.")
+    for name in missing:
+        atomic_copy(PLUGIN / "libexec" / name, EXEC / name)
+    return missing
+
+
 def apply():
     if os.geteuid() != 0:
         raise RuntimeError("Administrator access required to update Hangar")
@@ -134,7 +163,9 @@ def apply():
         new_sha = latest_commit()
         current = installed_commit()
         if current == new_sha:
-            print(json.dumps({"updated": False, "commit": current}))
+            repaired = repair_missing_executables()
+            print(json.dumps({"updated": bool(repaired), "commit": current,
+                              "repaired": repaired}))
             return
         with tempfile.TemporaryDirectory(prefix=".hangar-update-", dir=PLUGIN.parent) as work:
             work = Path(work)
