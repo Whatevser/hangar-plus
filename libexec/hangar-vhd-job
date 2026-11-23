@@ -158,7 +158,8 @@ def start(repo, snapshot, output):
             "systemd-run", "--quiet", "--collect", "--service-type=exec",
             "--unit=" + unit, "--property=KillMode=process",
             "--property=TimeoutStopSec=180",
-            RUNNER, "vhdx", repo, snapshot, output, str(PROGRESS), job_id,
+            RUNNER, Path(output).suffix.lower().lstrip("."), repo, snapshot,
+            output, str(PROGRESS), job_id,
         ]
         p = subprocess.run(cmd, capture_output=True, text=True)
         if p.returncode:
