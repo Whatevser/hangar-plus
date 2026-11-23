@@ -250,7 +250,7 @@ class VirtualDiskTests(unittest.TestCase):
                 vhd.command(["fake"], stdout=None)
         terminate.assert_called_once_with(fake_proc)
 
-    def test_root_bootloader_uses_image_only_and_no_nvram(self):
+    def test_root_bootloader_embeds_correct_image_config_without_nvram(self):
         # Exercise the full command sequence without actual root, loop devices,
         # grub-install, conversion or OS writes.
         with tempfile.TemporaryDirectory() as d:
@@ -271,16 +271,13 @@ class VirtualDiskTests(unittest.TestCase):
                     (root / "boot").mkdir(exist_ok=True)
                     (root / "boot/vmlinuz-6.8.0").write_text("kernel")
                     (root / "boot/initrd.img-6.8.0").write_text("initrd")
-                if op == "grub-install":
-                    self.assertTrue(any(s.startswith("--efi-directory=" + str(root)) for s in args))
-                    self.assertIn("--removable", args)
-                    self.assertIn("--no-nvram", args)
-                    (root / "boot/efi/EFI/BOOT").mkdir(parents=True)
-                    (root / "boot/efi/EFI/BOOT/BOOTX64.EFI").write_text("grub")
-                    # grub-install can create a locator referring to a
-                    # temporary host mount; Hangar must replace it afterwards.
-                    (root / "boot/efi/EFI/BOOT/grub.cfg").write_text(
-                        "search --fs-uuid --set=root wrong-host-uuid\n")
+                if op == "grub-mkstandalone":
+                    self.assertIn("--format=x86_64-efi", args)
+                    self.assertTrue(any(a.startswith("--modules=") for a in args))
+                    self.assertIn("boot/grub/grub.cfg=" +
+                                  str(root / "boot/efi/EFI/BOOT/grub.cfg"), args)
+                    loader = root / "boot/efi/EFI/BOOT/BOOTX64.EFI"
+                    loader.write_bytes(b"MZ" + bytes(2046))
             def do_restore(restic, snapshot, target):
                 cmd(["restic", "restore", snapshot, target])
             with patch.object(vhd, "command", side_effect=cmd), \
@@ -293,14 +290,60 @@ class VirtualDiskTests(unittest.TestCase):
                 vhd.make_raw(["restic"], "latest", raw, root, 16)
             self.assertEqual([a[0] for a in calls],
                              ["sfdisk", "mkfs.vfat", "mkfs.ext4", "mount",
-                              "restic", "mount", "grub-install", "sync", "sync"])
+                              "restic", "mount", "grub-mkstandalone", "sync", "sync"])
             esp_cfg = (root / "boot/efi/EFI/BOOT/grub.cfg").read_text()
             self.assertIn("550e8400-e29b-41d4-a716-446655440000", esp_cfg)
             self.assertIn("set prefix=($root)/boot/grub", esp_cfg)
             self.assertIn("configfile $prefix/grub.cfg", esp_cfg)
-            self.assertNotIn("wrong-host-uuid", esp_cfg)
             self.assertIn("550e8400-e29b-41d4-a716-446655440000",
                           (root / "boot/grub/grub.cfg").read_text())
+
+    def test_missing_runtime_mountpoints_rebuilt_inside_image_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "mounted-image"
+            root.mkdir()
+            (root / "tmp").mkdir(mode=0o700)
+            (root / "tmp" / "keep").write_text("snapshot")
+            untouched = (root / "tmp").stat().st_mode & 0o7777
+            vhd.ensure_boot_directories(root)
+            for rel in ("dev", "proc", "sys", "run", "tmp", "var", "var/tmp"):
+                self.assertTrue((root / rel).is_dir(), rel)
+            self.assertEqual((root / "tmp").stat().st_mode & 0o7777, untouched)
+            self.assertEqual((root / "tmp/keep").read_text(), "snapshot")
+            self.assertEqual((root / "var/tmp").stat().st_mode & 0o7777, 0o1777)
+            self.assertEqual((root / "proc").stat().st_mode & 0o7777, 0o555)
+            self.assertEqual((root / "sys").stat().st_mode & 0o7777, 0o555)
+            self.assertFalse((Path(d) / "run").exists())
+
+    def test_missing_mountpoint_conflicts_fail_without_following_symlinks(self):
+        for rel in ("dev", "proc", "sys", "run", "tmp", "var", "var/tmp"):
+            with self.subTest(path=rel), tempfile.TemporaryDirectory() as d:
+                root = Path(d) / "root"
+                root.mkdir()
+                conflict = root / rel
+                conflict.parent.mkdir(parents=True, exist_ok=True)
+                conflict.write_text("not a directory")
+                with self.assertRaisesRegex(ValueError, "Unsafe essential directory"):
+                    vhd.ensure_boot_directories(root)
+                self.assertEqual(conflict.read_text(), "not a directory")
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "root"
+            root.mkdir()
+            (root / "dev").symlink_to("/dev")
+            with self.assertRaisesRegex(ValueError, "Unsafe essential directory"):
+                vhd.ensure_boot_directories(root)
+
+    def test_efi_standalone_launcher_has_valid_image_uuid_locator(self):
+        with tempfile.TemporaryDirectory() as d:
+            esp = Path(d)
+            boot = esp / "EFI/BOOT"
+            boot.mkdir(parents=True)
+            vhd.install_efi_grub_locator(esp, "550e8400-e29b-41d4-a716-446655440000")
+            cfg = (boot / "grub.cfg").read_text()
+            self.assertIn("search --no-floppy --fs-uuid --set=root", cfg)
+            self.assertIn("set prefix=($root)/boot/grub", cfg)
+            self.assertIn("configfile $prefix/grub.cfg", cfg)
+            self.assertNotIn("/dev/loop", cfg)
 
     def test_efi_locator_rejects_bad_uuid_and_symlink(self):
         with self.assertRaisesRegex(ValueError, "Invalid image root UUID"):
