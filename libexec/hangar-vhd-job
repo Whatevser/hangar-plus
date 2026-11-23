@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Persistent VHDX export job controller.
+
+Commands are short-lived; the image is built by systemd independently of
+Cockpit's websocket. One active export per host prevents competing loop
+mounts and exhausted disk space. Status is persisted as private JSON.
+"""
+import fcntl
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+from pathlib import Path
+
+STATE_DIR = Path("/var/lib/hangar/vhd")
+CURRENT = STATE_DIR / "current.json"
+PROGRESS = STATE_DIR / "progress.json"
+LOCK = STATE_DIR / "control.lock"
+RUNNER = "/usr/libexec/hangar/hangar-portable"
+BUILDER = "/usr/libexec/hangar/hangar-vhd"
+UNIT = re.compile(r"hangar-vhd-[0-9a-f]{16}\.service\Z")
+REPO = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62})\Z")
+SNAPSHOT = re.compile(r"[0-9a-fA-F]{64}\Z")
+TERMINAL = ("completed", "failed", "cancelled")
+RUNNING = ("active", "activating", "reloading", "deactivating")
+
+
+def error(message):
+    raise ValueError(message)
+
+
+def atomic_json(path, payload):
+    STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, temp = tempfile.mkstemp(prefix=".write-", dir=STATE_DIR)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            os.fchmod(f.fileno(), 0o600)
+            json.dump(payload, f)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+
+
+def read_json(path):
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def systemd_state(unit):
+    if not UNIT.fullmatch(unit):
+        error("Invalid VHD export unit.")
+    p = subprocess.run(
+        ["systemctl", "show", "--property=ActiveState", "--value", unit],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if p.returncode:
+        return "not-found"
+    return p.stdout.strip() or "not-found"
+
+
+def status():
+    job = read_json(CURRENT)
+    if not job:
+        return {"state": "idle"}
+    if not UNIT.fullmatch(str(job.get("unit", ""))):
+        return {"state": "failed", "error": "Invalid saved VHD export job."}
+    progress = read_json(PROGRESS)
+    if progress.get("job_id") != job.get("job_id"):
+        progress = {}
+    unit_state = systemd_state(job["unit"])
+    running = unit_state in RUNNING
+    recorded = progress.get("state")
+    if running:
+        state = "cancelling" if job.get("cancelling") else "running"
+    elif recorded in TERMINAL:
+        state = recorded
+    elif unit_state == "failed":
+        state = "failed"
+    elif unit_state in ("inactive", "not-found"):
+        state = "failed"
+    else:
+        state = "running"
+    result = {
+        "state": state, "unit": job["unit"],
+        "job_id": job["job_id"], "repo": job.get("repo", ""),
+        "snapshot": job.get("snapshot", ""), "output": job.get("output", ""),
+        "started": job.get("started"), "phase": progress.get("phase", "Starting"),
+        "detail": progress.get("detail", "Starting background export…"),
+        "percent": progress.get("percent"),
+        "bytes_done": progress.get("bytes_done"),
+        "total_bytes": progress.get("total_bytes"),
+        "updated": progress.get("updated"),
+        "error": progress.get("error") if state == "failed" else None,
+    }
+    if state == "failed" and not result["error"]:
+        result["error"] = ("VHDX service stopped before reporting completion. "
+                           "Check the systemd journal for " + job["unit"] + ".")
+    if state in TERMINAL:
+        # Include a bounded excerpt of the journal to diagnose errors instantly.
+        p = subprocess.run(
+            ["journalctl", "--no-pager", "-o", "cat", "-u", job["unit"], "-n", "30"],
+            capture_output=True, text=True)
+        if p.returncode == 0:
+            result["log"] = "\n".join(p.stdout.splitlines()[-30:])[-5000:]
+    return result
+
+
+def start(repo, snapshot, output):
+    if not REPO.fullmatch(repo) or not SNAPSHOT.fullmatch(snapshot):
+        error("Choose a configured repository and full snapshot ID.")
+    if not output.startswith("/") or "\n" in output or "\0" in output or \
+            not output.lower().endswith((".vhdx", ".vhd")):
+        error("Use an absolute .vhdx or .vhd output filename.")
+    if os.path.lexists(output):
+        error("Output already exists. No file was overwritten.")
+    if not Path(output).parent.is_dir():
+        error("Output directory does not exist.")
+    # Run all preflights that can fail immediately, before creating a service.
+    # The worker independently validates the complete snapshot and tools.
+    if not Path(RUNNER).is_file():
+        error("Hangar's portable runner is missing. Update Hangar.")
+    if not (Path(BUILDER).is_file() or
+            Path("/usr/share/cockpit/hangar/libexec/hangar-vhd").is_file()):
+        error("VHDX builder missing. Update Hangar to repair the installation.")
+    with LOCK.open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        previous = status()
+        if previous.get("state") in ("running", "cancelling"):
+            error("An export is already running: " + previous.get("output", ""))
+        job_id = uuid.uuid4().hex[:16]
+        unit = "hangar-vhd-" + job_id + ".service"
+        job = {"job_id": job_id, "unit": unit, "repo": repo, "snapshot": snapshot,
+               "output": output, "started": int(time.time()), "cancelling": False}
+        atomic_json(CURRENT, job)
+        atomic_json(PROGRESS, {
+            "job_id": job_id, "state": "running", "phase": "Starting",
+            "detail": "Launching independent systemd job…", "updated": int(time.time())})
+        cmd = [
+            "systemd-run", "--quiet", "--collect", "--service-type=exec",
+            "--unit=" + unit, "--property=KillMode=process",
+            "--property=TimeoutStopSec=180",
+            RUNNER, "vhdx", repo, snapshot, output,
+        ]
+        p = subprocess.run(cmd, capture_output=True, text=True)
+        if p.returncode:
+            msg = (p.stderr or p.stdout).strip() or "systemd-run failed"
+            atomic_json(PROGRESS, {
+                "job_id": job_id, "state": "failed", "phase": "Failed to start",
+                "detail": msg, "error": msg, "updated": int(time.time())})
+            error("Could not start export: " + msg)
+        return status()
+
+
+def cancel():
+    with LOCK.open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        current = status()
+        if current.get("state") not in ("running", "cancelling"):
+            return current
+        job = read_json(CURRENT)
+        job["cancelling"] = True
+        atomic_json(CURRENT, job)
+        # Signals the primary Python builder only; its cancellation handler
+        # terminates children and unmounts/detaches the RAW loop safely.
+        p = subprocess.run(["systemctl", "kill", "--kill-who=main", "--signal=TERM",
+                            job["unit"]], capture_output=True, text=True)
+        if p.returncode:
+            error((p.stderr or p.stdout).strip() or "Could not request cancellation")
+        return status()
+
+
+def main(argv):
+    if os.geteuid() != 0:
+        error("Administrator access is required.")
+    STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    STATE_DIR.chmod(0o700)
+    if argv == ["status"]:
+        result = status()
+    elif len(argv) == 4 and argv[0] == "start":
+        result = start(argv[1], argv[2], argv[3])
+    elif argv == ["cancel"]:
+        result = cancel()
+    else:
+        error("Usage: hangar-vhd-job status|cancel|start REPO SNAPSHOT OUTPUT.vhdx")
+    print(json.dumps(result, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv[1:])
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        print("Hangar VHDX job: " + str(exc), file=sys.stderr)
+        sys.exit(1)
