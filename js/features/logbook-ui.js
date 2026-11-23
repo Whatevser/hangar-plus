@@ -1352,7 +1352,7 @@
                 }
             },
 
-            // --- durable, reconnectable VHDX export -------------------------
+            // --- durable, reconnectable bootable disk export -----------------
             vhdIsRunning() {
                 return this.vhdJob && ['running', 'cancelling'].includes(this.vhdJob.state);
             },
@@ -1443,8 +1443,8 @@
                     'Create a DECRYPTED UEFI disk from this complete Linux snapshot? ' +
                     'It contains unencrypted keys and credentials. The build runs as a ' +
                     'systemd job even if Cockpit disconnects. No VM or boot test is performed. Continue?')) return;
-                const initial = '/var/tmp/hangar-' + this.moment.id.slice(0, 12) + '.vhdx';
-                const name = root.prompt('Save bootable VHDX on this host (.vhdx or .vhd):', initial);
+                const initial = '/var/tmp/hangar-' + this.moment.id.slice(0, 12) + '.raw';
+                const name = root.prompt('Save bootable disk on this host (.raw recommended; .img, .vhdx, .vhd supported):', initial);
                 if (!name || !name.trim()) return;
                 this.vhdStartPending = true;
                 this.clearStatus();
@@ -1473,7 +1473,7 @@
                 if (!this.vhdIsRunning() || this.vhdAbortPending ||
                     this.vhdJob.state === 'cancelling') return;
                 if (typeof root.confirm === 'function' && !root.confirm(
-                    'Abort this VHDX build? Restoring/conversion will stop, and temporary loop mounts ' +
+                    'Abort this disk export? Restoring/conversion will stop, and temporary loop mounts ' +
                     'will be cleaned up. The backup snapshot is not affected.')) return;
                 this.vhdAbortPending = true;
                 try {
@@ -1914,10 +1914,10 @@
 '              title="Create an unencrypted data ISO from the selected complete snapshot (requires xorriso)."' +
 '              :disabled="!moment || busy || vhdIsRunning()" @click="createIso()">Create ISO…</button>' +
 '      <button type="button" class="btn btn-sm" :class="vhdIsRunning() ? \'btn-danger\' : \'btn-primary\'"' +
-'              title="Run a durable background VHDX export; click again to abort an active build."' +
+'              title="Export a bootable RAW disk by default (.vhdx/.vhd optional); click again to abort."' +
 '              :disabled="vhdStartPending || vhdAbortPending || vhdJob.state === \'cancelling\' || (!vhdIsRunning() && (!moment || busy))"' +
 '              @click="vhdIsRunning() ? abortVhdx() : createVhdx()"' +
-'              x-text="vhdJob.state === \'cancelling\' ? \'Aborting…\' : (vhdIsRunning() ? \'Abort VHDX\' : (vhdStartPending ? \'Starting…\' : \'Create VHDX…\'))"></button>' +
+'              x-text="vhdJob.state === \'cancelling\' ? \'Aborting…\' : (vhdIsRunning() ? \'Abort disk\' : (vhdStartPending ? \'Starting…\' : \'Create disk…\'))"></button>' +
 
      // Deliberately last, outline rather than solid, and disabled while anything
      // else is in flight: it is the one control on this screen that destroys
@@ -1946,9 +1946,9 @@
 '    </div>' +
 
 
-'    <section x-show="vhdJob && vhdJob.state !== \'idle\'" class="m-2 p-3 border rounded" aria-label="VHDX export progress" role="status" aria-live="polite">' +
+'    <section x-show="vhdJob && vhdJob.state !== \'idle\'" class="m-2 p-3 border rounded" aria-label="Bootable disk export progress" role="status" aria-live="polite">' +
 '      <div class="d-flex align-items-center gap-2 flex-wrap">' +
-'        <strong>VHDX export</strong>' +
+'        <strong>Bootable disk export</strong>' +
 '        <span class="badge" :class="vhdJob.state === \'failed\' ? \'text-bg-danger\' : (vhdJob.state === \'completed\' ? \'text-bg-success\' : \'text-bg-secondary\')" x-text="vhdJob.state"></span>' +
 '        <span class="small text-secondary ms-auto" x-text="vhdElapsed()"></span>' +
 '      </div>' +
