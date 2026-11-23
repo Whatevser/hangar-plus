@@ -34,6 +34,7 @@ class ExportCancelled(Exception):
 
 PROGRESS_FILE = None
 JOB_ID = None
+LAST_WARNING = None
 
 
 def emit(phase, detail, *, state="running", percent=None,
@@ -41,7 +42,9 @@ def emit(phase, detail, *, state="running", percent=None,
     """Write one atomic status record. All values remain available after logout."""
     payload = {"state": state, "job_id": JOB_ID, "phase": phase,
                "detail": detail, "percent": percent, "bytes_done": bytes_done,
-               "total_bytes": total_bytes, "error": error, "updated": int(time.time())}
+               "total_bytes": total_bytes, "error": error,
+               "warning": LAST_WARNING if state == "running" else None,
+               "updated": int(time.time())}
     if PROGRESS_FILE is not None:
         dest = PROGRESS_FILE
         fd, name = tempfile.mkstemp(prefix=".vhd-progress-", dir=dest.parent)
@@ -121,7 +124,16 @@ def stream_command(args, line_callback, *, env=None):
                 continue
             if buf:
                 line_callback(buf)
-                if not buf.startswith("{") and not buf.startswith("("):
+                if buf.startswith("{"):
+                    try:
+                        record = json.loads(buf)
+                        if record.get("message_type") == "error":
+                            problem = record.get("error")
+                            last_error = str(problem.get("message") if isinstance(
+                                problem, dict) else record.get("message", ""))[:500]
+                    except ValueError:
+                        pass
+                elif not buf.startswith("("):
                     last_error = buf[-500:]
                 buf = ""
         if buf:
@@ -142,6 +154,7 @@ def restore_with_progress(restic, snapshot, target):
 
     def consume(line):
         nonlocal last_percent
+        global LAST_WARNING
         try:
             msg = json.loads(line)
         except (ValueError, TypeError):
@@ -149,7 +162,9 @@ def restore_with_progress(restic, snapshot, target):
         if msg.get("message_type") == "error":
             detail = msg.get("error", {}).get("message") if isinstance(
                 msg.get("error"), dict) else msg.get("message", "Restore error")
-            print("Restic: " + str(detail)[:500], file=sys.stderr, flush=True)
+            LAST_WARNING = str(detail)[:500]
+            emit("Restoring snapshot", "Restic reported a file error; see warning.")
+            print("Restic: " + LAST_WARNING, file=sys.stderr, flush=True)
         if msg.get("message_type") not in ("status", "summary"):
             return
         fraction = msg.get("percent_done")
