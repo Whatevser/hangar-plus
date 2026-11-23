@@ -441,7 +441,14 @@ def make_raw(restic, snapshot, raw, mount_dir, size):
         command(["sync", "-f", esp_dir])
         command(["sync", "-f", mount_dir])
     finally:
-        problems = cleanup_loop(loop, mount_dir, efi_mounted, root_mounted)
+        # Once cancellation has started cleanup, a second SIGTERM must not
+        # interrupt unmount/detach and leave the host with busy loop devices.
+        previous_handler = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        try:
+            problems = cleanup_loop(loop, mount_dir, efi_mounted, root_mounted)
+        finally:
+            signal.signal(signal.SIGTERM, previous_handler)
         if problems:
             # Caller must preserve the temporary directory on cleanup failure.
             raise RuntimeError("FAILED_TO_DETACH: " + ", ".join(problems))
