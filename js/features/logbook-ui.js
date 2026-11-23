@@ -1451,10 +1451,16 @@
                     this.vhdShowLog = false;
                     this.vhdConnection = '';
                 } catch (e) {
-                    this.handleError(e);
-                    // Even an interrupted start response can mean the server
-                    // successfully launched the job: status is authoritative.
+                    // A disconnected browser can lose the start response after
+                    // systemd already accepted the job. Re-read persisted state
+                    // before reporting any failure.
+                    const disconnected = /disconnect|terminated|transport|no-host/i.test(
+                        String((e && e.problem) || ''));
+                    if (!disconnected) this.handleError(e);
                     await this.refreshVhdStatus();
+                    if (this.vhdIsRunning()) this.error = null;
+                    else if (disconnected) this.vhdConnection =
+                        'Connection lost while starting the export. Reconnecting to check whether it started…';
                 } finally {
                     this.vhdStartPending = false;
                 }
@@ -1967,6 +1973,8 @@
 '    <div x-show="reader === \'ls\'" class="alert alert-info m-2 py-2 px-3 small mb-0">' +
 '      Browsing without a mount, which is slower: <span x-text="fallbackReason"></span>.' +
 '    </div>' +
+
+'    <div x-show="vhdConnection && (!vhdJob || vhdJob.state === \'idle\')" class="alert alert-warning m-2 py-2 px-3 small mb-0" role="status" x-text="vhdConnection"></div>' +
 
 '    <div x-show="notice" :class="noticeClass()" class="m-2 py-2 px-3 small mb-0"' +
 '         role="status" aria-live="polite" x-text="notice"></div>' +
