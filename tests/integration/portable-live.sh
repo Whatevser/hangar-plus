@@ -33,6 +33,22 @@ test -f "$work/repo/hangar-vhd.py"
 "$work/repo/hangar-access.sh" snapshots
 python3 "$work/repo/hangar-vhd.py" --help >/dev/null
 
+# A generated helper may be updated safely, without overwriting an unknown script.
+printf '\n# previous Hangar revision\n' >> "$work/repo/hangar-vhd.py"
+python3 /usr/libexec/hangar/hangar-portable access-kit portable-ci
+cmp "$ROOT/libexec/hangar-vhd" "$work/repo/hangar-vhd.py"
+
+# Existing v2 kits must be recognized, migrated without changing their key.
+python3 - "$work/repo/hangar-access.sh" <<'PY'
+import runpy, sys
+from pathlib import Path
+old = runpy.run_path("/usr/libexec/hangar/hangar-portable", run_name="hangar_test")
+Path(sys.argv[1]).write_text(old["ACCESS_SCRIPT_V2"], encoding="utf-8")
+PY
+python3 /usr/libexec/hangar/hangar-portable access-kit portable-ci
+grep -q "Hangar standalone access kit v3" "$work/repo/hangar-access.sh"
+cmp "$key" "$work/repo/hangar-access.key"
+
 # Simulate an old kit and upgrade it, WITHOUT replacing or losing its key.
 cat > "$work/repo/hangar-access.sh" <<'LEGACY'
 #!/bin/sh
