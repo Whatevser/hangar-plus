@@ -1,0 +1,29 @@
+name: Temporary bootable VHDX export validation
+on:
+  push:
+    branches: [feature/bootable-vhdx-export]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Python syntax
+        run: python3 -m py_compile libexec/hangar-vhd libexec/hangar-portable libexec/hangar-update
+      - name: VHDX builder tests (no VM or physical disks)
+        run: python3 tests/integration/vhd_test.py -v
+      - name: Existing JS unit tests and Cockpit smoke checks
+        run: npm run test:unit && npm run test:smoke
+      - name: Standalone ISO regression and actual offline VHDX conversion
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq restic xorriso qemu-utils
+          sudo bash tests/integration/portable-live.sh
+          mkdir -p /tmp/hangar-format
+          truncate -s 16M /tmp/hangar-format/source.raw
+          qemu-img convert -f raw -O vhdx /tmp/hangar-format/source.raw /tmp/hangar-format/out.vhdx
+          qemu-img convert -f raw -O vpc /tmp/hangar-format/source.raw /tmp/hangar-format/out.vhd
+          qemu-img info -f vhdx /tmp/hangar-format/out.vhdx | grep -q 'file format: vhdx'
+          qemu-img info -f vpc /tmp/hangar-format/out.vhd | grep -q 'file format: vpc'
