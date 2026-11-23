@@ -160,7 +160,7 @@ The mount location, idle-unmount interval, and **Allow local access** setting li
 1. Allocate a **private, sparse RAW disk** sized from restic's logical restore size plus headroom (minimum 16 GiB).
 2. Partition it as **GPT** with a **512 MiB FAT32 EFI System Partition** and an **ext4 root partition**.
 3. Attach it using a verified loop device, format the partitions, and run **restic restore directly into ext4**, preserving supported metadata.
-4. Check the restored system for a matching **kernel, initramfs, and modules**; recreate missing empty **`/dev`, `/proc`, `/sys`, `/run`, `/tmp`, `/var/tmp`** mountpoints inside the image (without overwriting existing directories); configure **the image's** root UUID/fstab and GRUB menu; produce a **standalone x86-64 UEFI GRUB** loader embedding the image-specific UUID locator, so the VM can find `/boot/grub/grub.cfg` without manual commands.
+4. Check the restored system for a matching **kernel, initramfs, and modules**; recreate missing empty **`/dev`, `/proc`, `/sys`, `/run`, `/tmp`, `/var/tmp`** mountpoints inside the image (without overwriting existing directories); configure **the image's** root UUID/fstab and GRUB menu; use the host distribution's **`grub-install`** to install a removable UEFI bootloader (signed shim/GRUB when available), and place image-specific root UUID locators in the fallback and vendor EFI directories so GRUB finds `/boot/grub/grub.cfg` automatically.
 5. Unmount and detach. For **RAW**, publish that same sparse disk directly. For **VHDX/VHD only**, run `qemu-img convert` to create the requested output.
 
 **RAW avoids the extra conversion and extra populated image copy.** A RAW disk's *virtual capacity* can be much larger than its actual allocated blocks: compare `ls -lh` (logical size) with `du -h` (space used). Use sparse-aware copy tools when moving it.
@@ -173,13 +173,31 @@ While active, **Create disk…** changes to **Abort disk**. Cancellation request
 
 Output files are not silently overwritten. The disk contains plaintext data and credentials from the restored system; protect it like a copy of the source machine.
 
+### Repair a RAW image after an EFI bootloader regression
+
+If a previously exported Hangar RAW disk was given an unsigned bootloader
+and now fails in UEFI with `Access Denied`, **shut down the VM completely**
+before running this in-place repair. It does not restore the snapshot again:
+
+~~~sh
+sudo python3 /usr/share/cockpit/hangar/libexec/hangar-vhd --repair-raw /absolute/path/hangar-snapshot.raw
+~~~
+
+Repair validates that the image has Hangar's EFI/root partition labels, checks
+that it isn't in use, verifies its root UUID, and fixes its EFI bootloader/menu
+and missing essential directories. The old EFI loader is preserved inside
+the image as `EFI/BOOT/BOOTX64.EFI.before-hangar-repair`. It requires
+`fuser` (psmisc) and the normal loop/GRUB tools. The host's bootloader and
+NVRAM remain untouched. Secure Boot still requires trusted signed EFI packages.
+
+
 ### What these images can—and cannot—boot
 
 The exporter targets **x86-64 UEFI, systemd-based Linux installations with an unencrypted ext4 root** and a complete snapshot including `/etc`, `/boot`, kernel modules, and initramfs.
 
-It **does not** recreate encrypted-root/LUKS, Btrfs/ZFS/LVM layouts, independent `/boot` partitions, or a BIOS/legacy bootloader. **Secure Boot is unsupported** by the generated unsigned EFI bootloader. It does not inspect or repair a VM's firmware settings. The standalone EFI GRUB executable is unsigned.
+It **does not** recreate encrypted-root/LUKS, Btrfs/ZFS/LVM layouts, independent `/boot` partitions, or a BIOS/legacy bootloader. **Secure Boot requires trusted signed shim/GRUB EFI binaries from the host distribution**, commonly `shim-signed` and `grub-efi-amd64-signed` on Ubuntu-based hosts. Hangar does not sign EFI binaries or guarantee the VM trusts them.
 
-For **Cockpit Virtual Machines**, select **UEFI/OVMF firmware with Secure Boot disabled** and attach a `.raw` disk with the QEMU/libvirt **raw** driver. Make sure the VM's QEMU process can access the file *and every parent directory*. Firmware, virtual disk controller, and initramfs driver differences may still prevent boot.
+For **Cockpit Virtual Machines**, use **UEFI/OVMF firmware** and attach a `.raw` disk with the QEMU/libvirt **raw** driver. If your host lacks suitable trusted signed EFI binaries, disable Secure Boot in the VM firmware. Make sure the VM's QEMU process can access the file *and every parent directory*. Firmware, virtual disk controller, and initramfs driver differences may still prevent boot.
 
 **An export reporting “completed” means files, partitions and the EFI bootloader were assembled—not that the machine booted successfully.** No automatic VM boot test is performed.
 
@@ -282,7 +300,7 @@ sudo make uninstall
 | **fuse3** | Snapshot FUSE browsing | Hangar dependency setup can install it; `restic ls` is a fallback |
 | **xorriso** | Non-bootable data ISO export | Install separately if unavailable |
 | **sfdisk, losetup, mount, umount, blkid, mkfs.vfat, mkfs.ext4** | Bootable disk creation | Host disk/FS tools; check before exporting |
-| **grub-mkstandalone** plus x86-64 EFI modules | Bootable UEFI disks | Install the host's GRUB EFI tooling |
+| **grub-install** plus x86-64 EFI modules | Bootable UEFI disks | Install the host's GRUB EFI tooling; signed shim/GRUB packages for Secure Boot |
 | **qemu-img** (`qemu-utils`) | **Only VHDX/VHD** conversion | **Not needed for RAW export** |
 | **Podman or Docker** | Corresponding container-volume jobs | Runtime must already manage those volumes |
 
