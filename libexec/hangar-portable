@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Decrypted data ISO creation and an optional Hangar-independent access kit.
+"""Decrypted data ISO, bootable disk export, and an independent access kit.
 
-Does not perform machine rescue, VM operations or archive imports.
+Does not run a VM, modify host bootloaders, or import archives.
 """
 import json
 import os
@@ -89,7 +89,7 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 exec restic -r "$here" --password-file "$here/hangar-access.key" "$@"
 """
 
-ACCESS_SCRIPT = r"""#!/bin/sh
+ACCESS_SCRIPT_V2 = r"""#!/bin/sh
 # Hangar standalone access kit v2 — requires restic; ISO also needs xorriso.
 set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
@@ -140,6 +140,48 @@ fi
 exec restic -r "$here" --password-file "$key" "$@"
 """
 
+# Preserve an exact copy of the shipped v2 script to safely upgrade access
+# kits without touching third-party or user-modified scripts.
+ACCESS_SCRIPT = ACCESS_SCRIPT_V2.replace(
+    "Hangar standalone access kit v2", "Hangar standalone access kit v3"
+).replace(
+    'exec restic -r "$here" --password-file "$key" "$@"',
+    '''if [ "$#" -gt 0 ] && { [ "$1" = "vhd" ] || [ "$1" = "vhdx" ]; }; then
+    shift
+    if [ "$#" -ne 2 ]; then
+        echo "Usage: $0 vhdx <latest|snapshot-id> </absolute/output.vhdx>" >&2
+        exit 2
+    fi
+    exec python3 "$here/hangar-vhd.py" --repo "$here" --password-file "$key" --snapshot "$1" --output "$2"
+fi
+exec restic -r "$here" --password-file "$key" "$@"'''
+)
+
+# Only copies of Hangar's generated helper may be refreshed automatically.
+BUILDER_HEADER = '#!/usr/bin/env python3\\n"""Create an offline, UEFI-bootable VHDX/VHD'
+
+
+def publish_builder(source, dest):
+    new = source.read_bytes()
+    if dest.exists():
+        current = dest.read_bytes()
+        if current == new:
+            return
+        if not current.startswith(BUILDER_HEADER.encode("utf-8")):
+            abort("Existing hangar-vhd.py is not recognized. Refusing to overwrite.")
+    temp = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=dest.parent,
+                                         prefix=".hangar-vhd-", delete=False) as fh:
+            temp = Path(fh.name)
+            fh.write(new)
+        temp.chmod(0o700)
+        os.replace(temp, dest)
+    finally:
+        if temp:
+            temp.unlink(missing_ok=True)
+
+
 
 def export_access_kit(repo_id):
     definition, _, _ = repository(repo_id)
@@ -151,6 +193,12 @@ def export_access_kit(repo_id):
     key_file = Path(CONF) / "repos" / (repo_id + ".key")
     key_dest = folder / "hangar-access.key"
     script_dest = folder / "hangar-access.sh"
+    builder_source = Path("/usr/libexec/hangar/hangar-vhd")
+    builder_dest = folder / "hangar-vhd.py"
+    if not builder_source.is_file():
+        abort("Bootable disk image helper is not installed. Update Hangar first.")
+    if builder_dest.is_symlink():
+        abort("Refusing to replace symlinked access-kit builder.")
     key_bytes = key_file.read_bytes()
 
     # A password from another repository is NEVER silently replaced.
@@ -158,7 +206,7 @@ def export_access_kit(repo_id):
         abort("Existing access-kit key does not match Hangar's password. Not overwriting.")
     if script_dest.exists():
         saved = script_dest.read_text(encoding="utf-8")
-        if saved not in (ACCESS_SCRIPT, LEGACY_ACCESS_SCRIPT):
+        if saved not in (ACCESS_SCRIPT, ACCESS_SCRIPT_V2, LEGACY_ACCESS_SCRIPT):
             abort("An unrecognized access script already exists. Not overwriting it.")
     else:
         saved = None
@@ -169,6 +217,9 @@ def export_access_kit(repo_id):
         created_key = True
         with os.fdopen(fd, "wb") as fh:
             fh.write(key_bytes)
+
+    # Install independent builder before exposing an access script that uses it.
+    publish_builder(builder_source, builder_dest)
 
     if saved != ACCESS_SCRIPT:
         try:
@@ -187,6 +238,7 @@ def export_access_kit(repo_id):
 
     print("Standalone access kit ready in " + str(folder), flush=True)
     print("Run: ./hangar-access.sh iso latest /absolute/path/backup.iso", flush=True)
+    print("Bootable disk: ./hangar-access.sh vhdx latest /absolute/path/backup.vhdx", flush=True)
     print("WARNING: Anyone with this directory can decrypt the backups.", flush=True)
 
 
@@ -195,10 +247,20 @@ def main(argv):
         abort("Administrator access is required.")
     if len(argv) == 5 and argv[1] == "iso":
         export_iso(argv[2], argv[3], argv[4])
+    elif len(argv) == 5 and argv[1] == "vhdx":
+        _, args, env = repository(argv[2])
+        subprocess.run([
+            sys.executable, "/usr/libexec/hangar/hangar-vhd",
+            "--repo", args[2],
+            "--password-file", args[4],
+            "--cache-dir", CACHE,
+            "--snapshot", argv[3],
+            "--output", argv[4]
+        ], env=env, check=True)
     elif len(argv) == 3 and argv[1] == "access-kit":
         export_access_kit(argv[2])
     else:
-        abort("Usage: hangar-portable iso REPO SNAPSHOT OUTPUT.iso | access-kit REPO")
+        abort("Usage: hangar-portable iso|vhdx REPO SNAPSHOT OUTPUT | access-kit REPO")
 
 
 if __name__ == "__main__":
