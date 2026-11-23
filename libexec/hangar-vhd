@@ -505,9 +505,11 @@ def make_raw(restic, snapshot, raw, mount_dir, size):
                  "--output=" + str(loader),
                  "boot/grub/grub.cfg=" + str(boot_dir / "grub.cfg")],
                 stdout=subprocess.DEVNULL)
-        if not loader.is_file() or loader.stat().st_size < 1024 or (
-                loader.open("rb").read(2) != b"MZ"):
+        if not loader.is_file() or loader.stat().st_size < 1024:
             abort("Standalone UEFI GRUB executable was not created correctly.")
+        with loader.open("rb") as binary:
+            if binary.read(2) != b"MZ":
+                abort("Generated EFI bootloader has an invalid executable header.")
         emit("Syncing", "Flushing the virtual filesystems to disk…")
         command(["sync", "-f", esp_dir])
         command(["sync", "-f", mount_dir])
