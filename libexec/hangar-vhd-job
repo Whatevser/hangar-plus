@@ -103,6 +103,7 @@ def status():
         "total_bytes": progress.get("total_bytes"),
         "updated": progress.get("updated"),
         "error": progress.get("error") if state == "failed" else None,
+        "warning": progress.get("warning") if running else None,
     }
     if state == "failed" and not result["error"]:
         result["error"] = ("VHDX service stopped before reporting completion. "
