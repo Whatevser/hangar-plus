@@ -29,7 +29,7 @@ FILES = {
     "manifest.json", "index.html", "README.md", "CHANGELOG.md",
     "VERSION", "Makefile", "css", "js", "html", "screenshots", "libexec", "systemd"
 }
-EXECUTABLES = ("hangar-run", "hangar-portable", "hangar-vhd", "hangar-update")
+EXECUTABLES = ("hangar-run", "hangar-portable", "hangar-vhd", "hangar-vhd-job", "hangar-update")
 
 
 def request(url):
@@ -109,7 +109,7 @@ def unpack(source, destination):
                     shutil.copyfileobj(stream, out)
                 target.chmod(member.mode & 0o777)
     for name in ("index.html", "manifest.json", "VERSION", "libexec/hangar-run",
-                 "libexec/hangar-portable", "libexec/hangar-vhd", "libexec/hangar-update"):
+                 "libexec/hangar-portable", "libexec/hangar-vhd", "libexec/hangar-vhd-job", "libexec/hangar-update"):
         if not (destination / name).is_file():
             raise RuntimeError("Incomplete GitHub archive: missing " + name)
 
