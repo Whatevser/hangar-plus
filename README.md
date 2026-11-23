@@ -45,6 +45,50 @@ for the selected snapshot. It requires `xorriso`, plus free space for the
 temporary restored files and the finished ISO. It is not a clone of the
 encrypted restic repository, and it cannot preserve all Linux metadata.
 
+**Create VHDX** in the Logbook writes a **bootable, decrypted virtual disk**
+for a selected **complete Linux system snapshot**, without creating, installing
+or starting any VM. This is separate from and does **not** change Create ISO.
+
+The builder creates a temporary **sparse RAW disk** with a GPT partition table,
+a 512 MiB FAT32 EFI System Partition and an ext4 root partition. It restores the
+snapshot directly into the ext4 partition (preserving file metadata through
+restic), chooses a matching snapshot kernel/initramfs/modules set, replaces the
+original root/EFI disk UUID references in the **virtual disk only**, and installs
+GRUB's UEFI removable bootloader into the **virtual** EFI partition. It never
+writes the physical host disk's bootloader, touches UEFI NVRAM, or calls
+`update-initramfs` on the host.
+
+The finished image is converted to **.vhdx** (recommended, dynamic/sparse)
+or legacy **.vhd** by `qemu-img`, the small image conversion utility from
+`qemu-utils`; **the QEMU emulator, KVM, or a virtual machine are not
+required**. The disk capacity is selected automatically from restic's
+logical restore size with headroom (minimum 16 GiB). An advanced standalone
+option `--size-gib` is available in the independent Python builder.
+
+This first implementation supports **x86-64 UEFI boots of unencrypted ext4
+Linux systems using systemd**; it needs a complete snapshot including
+`/etc`, `/boot`, kernel modules and the initramfs. It deliberately
+refuses partial filesystem snapshots and LUKS/crypttab configurations.
+Btrfs/ZFS/LVM layout recreation, Secure Boot, BIOS/Gen1 firmware, and
+reconstructing separate `/boot` filesystems are not supported.
+
+Requirements on the building Linux host: `restic`, `sfdisk`, `losetup`,
+`mount`/`umount`, `mkfs.vfat` (dosfstools), `mkfs.ext4` (e2fsprogs),
+`blkid`, `grub-install` with x86-64 EFI modules (grub-efi-amd64-bin),
+and `qemu-img` (qemu-utils). These are disk/boot utilities, **not a VM**.
+The builder checks for them before writing any files and reports missing tools.
+It needs administrator privileges to mount temporary loop devices. The host
+must permit loop devices, and the destination needs scratch space for both
+the RAW image's populated ext4 filesystem and the final VHDX.
+
+**Important limitations:** no boot test is performed or implied. Successful
+generation means the GPT/filesystems/GRUB/files were assembled, *not* that
+an unfamiliar virtual controller can load every snapshot initramfs driver.
+UEFI Secure Boot must be disabled when booting the unsigned image. The VHDX
+contains **unencrypted private data and credentials**, and booting a cloned
+system while its original is online can duplicate host identity and background
+network services. Keep images private, and be careful before booting a clone.
+
 The original restic password is stored separately at
 `/etc/hangar/repos/<id>.key` and is NOT embedded in the encrypted
 repository. To use the backup independently of Hangar, local repositories
@@ -61,8 +105,13 @@ on **any Linux host**, run in the repository directory:
 ```sh
 sudo ./hangar-access.sh snapshots
 sudo ./hangar-access.sh iso latest /absolute/path/backup.iso
+sudo ./hangar-access.sh vhdx latest /absolute/path/recovered.vhdx
 # Or replace latest with a particular restic snapshot ID.
 ```
+
+The VHDX command also works **without Hangar and Cockpit** using a
+`hangar-vhd.py` copy placed in the access kit beside the repository.
+The original restic password file is retained when updating old kits.
 
 That ISO command works **without Hangar and without Cockpit**. It uses the
 local repository and password file directly, never alters existing
