@@ -261,16 +261,21 @@ def main(argv):
         abort("Administrator access is required.")
     if len(argv) == 5 and argv[1] == "iso":
         export_iso(argv[2], argv[3], argv[4])
-    elif len(argv) == 5 and argv[1] == "vhdx":
+    elif len(argv) in (5, 7) and argv[1] == "vhdx":
         _, args, env = repository(argv[2])
-        subprocess.run([
+        program = [
             sys.executable, str(vhd_builder()),
             "--repo", args[2],
             "--password-file", args[4],
             "--cache-dir", CACHE,
             "--snapshot", argv[3],
             "--output", argv[4]
-        ], env=env, check=True)
+        ]
+        if len(argv) == 7:
+            program += ["--progress-file", argv[5], "--job-id", argv[6]]
+        # Preserve the service's main PID: cancellation signals must reach the
+        # builder itself, not an idle wrapper waiting on a subprocess.
+        os.execvpe(sys.executable, program, env)
     elif len(argv) == 3 and argv[1] == "access-kit":
         export_access_kit(argv[2])
     else:
