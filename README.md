@@ -45,55 +45,50 @@ for the selected snapshot. It requires `xorriso`, plus free space for the
 temporary restored files and the finished ISO. It is not a clone of the
 encrypted restic repository, and it cannot preserve all Linux metadata.
 
-**Create VHDX** in the Logbook writes a **bootable, decrypted virtual disk**
-for a selected **complete Linux system snapshot**, without creating, installing
-or starting any VM. This is separate from and does **not** change Create ISO.
+**Create disk** in Logbook exports a **bootable, decrypted virtual disk**
+from a selected **complete Linux system snapshot**, without creating or
+starting a VM. It defaults to **sparse RAW** (`.raw`; `.img` is equivalent)
+for Linux Cockpit/libvirt, which can attach it as `raw` directly. For
+Hyper-V and other consumers, choose a `.vhdx` (or `.vhd`) output filename
+instead; the filename extension selects the format. Create ISO is unchanged.
 
-The builder creates a temporary **sparse RAW disk** with a GPT partition table,
-a 512 MiB FAT32 EFI System Partition and an ext4 root partition. It restores the
-snapshot directly into the ext4 partition (preserving file metadata through
-restic), chooses a matching snapshot kernel/initramfs/modules set, replaces the
-original root/EFI disk UUID references in the **virtual disk only**, and installs
-GRUB's UEFI removable bootloader into the **virtual** EFI partition. It never
-writes the physical host disk's bootloader, touches UEFI NVRAM, or calls
-`update-initramfs` on the host.
+The builder always assembles a private sparse RAW disk with GPT, a 512 MiB
+FAT32 EFI System Partition, and an ext4 root partition. Restic restores into
+the mounted ext4 partition, preserving file metadata; Hangar configures the
+restored kernel/initramfs/modules and installs GRUB's removable UEFI loader
+**only in the virtual disk**. It never changes the host's physical bootloader,
+NVRAM, or initramfs.
 
-**Live progress and Abort:** VHDX exports are managed by a separate, short-lived
-`hangar-vhd-job` controller. It starts a transient **systemd service** for the
-long-running build, so **closing the Cockpit tab, WebSocket disconnecting, or
-logging out does not cancel or interrupt the export**. The private status
-in `/var/lib/hangar/vhd/` records the active stage, real restic restore
-percentage/bytes and qemu-img conversion percentage, errors and final outcome.
-The Logbook polls that status and resumes displaying it when reopened.
-While a build runs the **Create VHDX** button becomes **Abort VHDX**;
-abort signals the Python worker, terminates its current child command, and
-unmounts/detaches its temporary virtual-disk loop device before completion.
-The original snapshot remains untouched. Status polling uses short Cockpit
-requests, so a disconnected browser loses the display, **not the work**.
-Only one active VHD export per host is allowed.
+**RAW exports publish that finished sparse disk directly. There is no extra
+conversion and no second full image copy.** The output's logical capacity
+can be larger than its allocated size; use `du -h` to see actual disk usage,
+and copy with sparse-aware tools when moving RAW files. For VHDX/VHD only,
+`qemu-img convert` produces the requested target format in a second step.
 
-The finished image is converted to **.vhdx** (recommended, dynamic/sparse)
-or legacy **.vhd** by `qemu-img`, the small image conversion utility from
-`qemu-utils`; **the QEMU emulator, KVM, or a virtual machine are not
-required**. The disk capacity is selected automatically from restic's
-logical restore size with headroom (minimum 16 GiB). An advanced standalone
-option `--size-gib` is available in the independent Python builder.
+**Live progress and Abort:** All disk exports use the existing durable
+`hangar-vhd-job` background systemd service. Closing Cockpit, losing the
+WebSocket, or logging out **does not stop the build**. Private status in
+`/var/lib/hangar/vhd/` records restore percentage/bytes, steps, errors,
+and final outcome; conversion progress appears only for VHDX/VHD.
+The Logbook reconnects to the same status after reloading.
+While active, **Create disk** becomes **Abort disk**. Abort stops the worker,
+unmounts/detaches its loop device and leaves the backup snapshot alone.
+Only one bootable disk export runs per host at a time.
 
-This first implementation supports **x86-64 UEFI boots of unencrypted ext4
-Linux systems using systemd**; it needs a complete snapshot including
-`/etc`, `/boot`, kernel modules and the initramfs. It deliberately
-refuses partial filesystem snapshots and LUKS/crypttab configurations.
-Btrfs/ZFS/LVM layout recreation, Secure Boot, BIOS/Gen1 firmware, and
-reconstructing separate `/boot` filesystems are not supported.
+Disk capacity is estimated from restic's logical restore size plus headroom
+(minimum 16 GiB); the standalone builder supports `--size-gib`.
+Supported guests: **x86-64 UEFI, unencrypted ext4, systemd**, and full root
+snapshots including `/etc`, `/boot`, kernel modules and initramfs.
+Partial snapshots, encrypted root, Btrfs/ZFS/LVM recreation, BIOS/Gen1
+firmware and separate `/boot` layout reconstruction are not supported.
 
-Requirements on the building Linux host: `restic`, `sfdisk`, `losetup`,
-`mount`/`umount`, `mkfs.vfat` (dosfstools), `mkfs.ext4` (e2fsprogs),
-`blkid`, `grub-install` with x86-64 EFI modules (grub-efi-amd64-bin),
-and `qemu-img` (qemu-utils). These are disk/boot utilities, **not a VM**.
-The builder checks for them before writing any files and reports missing tools.
-It needs administrator privileges to mount temporary loop devices. The host
-must permit loop devices, and the destination needs scratch space for both
-the RAW image's populated ext4 filesystem and the final VHDX.
+Requirements: `restic`, `sfdisk`, `losetup`, `mount`/`umount`,
+`mkfs.vfat` (dosfstools), `mkfs.ext4` (e2fsprogs), `blkid`, and
+`grub-install` with x86-64 EFI modules (grub-efi-amd64-bin).
+`qemu-img` (qemu-utils) is **only required for .vhdx/.vhd**.
+No VM emulator is required to create the image. Building requires root to
+mount temporary loop devices. The destination needs enough space for the
+allocated RAW image, plus a converted image for VHDX/VHD requests.
 
 Other manual operations have not yet been migrated to this detached job
 architecture: in particular **Create ISO**, manual restore, repository integrity
@@ -104,7 +99,7 @@ that *every* lengthy action is WebSocket-independent yet.
 **Important limitations:** no boot test is performed or implied. Successful
 generation means the GPT/filesystems/GRUB/files were assembled, *not* that
 an unfamiliar virtual controller can load every snapshot initramfs driver.
-UEFI Secure Boot must be disabled when booting the unsigned image. The VHDX
+UEFI Secure Boot must be disabled when booting the unsigned image. Any exported disk
 contains **unencrypted private data and credentials**, and booting a cloned
 system while its original is online can duplicate host identity and background
 network services. Keep images private, and be careful before booting a clone.
@@ -125,11 +120,12 @@ on **any Linux host**, run in the repository directory:
 ```sh
 sudo ./hangar-access.sh snapshots
 sudo ./hangar-access.sh iso latest /absolute/path/backup.iso
-sudo ./hangar-access.sh vhdx latest /absolute/path/recovered.vhdx
+sudo ./hangar-access.sh raw latest /absolute/path/recovered.raw
+# Or choose .vhdx/.vhd and the corresponding vhdx/vhd command.
 # Or replace latest with a particular restic snapshot ID.
 ```
 
-The VHDX command also works **without Hangar and Cockpit** using a
+The RAW/VHDX/VHD commands also work **without Hangar and Cockpit** using a
 `hangar-vhd.py` copy placed in the access kit beside the repository.
 The original restic password file is retained when updating old kits.
 

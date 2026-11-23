@@ -2038,13 +2038,17 @@ test('restore verifies contents and treats a picked filename as literal', async 
 });
 
 
-// --- durable VHDX job -----------------------------------------------------
-test('VHDX action uses short systemd job control rather than long cockpit spawn', async () => {
+// --- durable bootable disk job -----------------------------------------------------
+test('RAW disk is default and runs through durable systemd job control', async () => {
     const c = attached();
     c.moment = { id: 'a'.repeat(64) };
     const calls = [];
     globalThis.confirm = () => true;
-    globalThis.prompt = () => '/tmp/test.vhdx';
+    globalThis.prompt = (message, suggested) => {
+        assert.match(message, /\.raw recommended/);
+        assert.match(suggested, /\.raw$/);
+        return suggested;
+    };
     try {
         await withCockpit((argv) => {
             calls.push(argv);
@@ -2066,6 +2070,7 @@ test('VHDX action uses short systemd job control rather than long cockpit spawn'
     assert.deepEqual(calls[0].slice(0, 2), ['/usr/bin/python3',
         '/usr/share/cockpit/hangar/libexec/hangar-vhd-job']);
     assert.deepEqual(calls[0].slice(2, 5), ['start', 'nas', 'a'.repeat(64)]);
+    assert.match(calls[0][5], /\.raw$/);
     assert.deepEqual(calls[1].slice(2), ['cancel']);
 });
 
@@ -2093,7 +2098,7 @@ test('Cockpit disconnect is not treated as VHDX export failure', async () => {
 
 test('Logbook action colors and abort behavior are consistent', () => {
     const html = UI.template();
-    assert.ok(html.includes('Abort VHDX'));
+    assert.ok(html.includes('Abort disk'));
     assert.ok(html.includes('vhdProgressText()'));
     assert.ok(html.includes('vhdJob.error'));
     assert.ok(html.includes('btn-danger'));

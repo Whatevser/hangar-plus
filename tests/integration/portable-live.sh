@@ -46,7 +46,20 @@ old = runpy.run_path("/usr/libexec/hangar/hangar-portable", run_name="hangar_tes
 Path(sys.argv[1]).write_text(old["ACCESS_SCRIPT_V2"], encoding="utf-8")
 PY
 python3 /usr/libexec/hangar/hangar-portable access-kit portable-ci
-grep -q "Hangar standalone access kit v3" "$work/repo/hangar-access.sh"
+grep -q "Hangar standalone access kit v4" "$work/repo/hangar-access.sh"
+cmp "$key" "$work/repo/hangar-access.key"
+
+# A generated v3 kit from the previous Hangar release is safe to upgrade.
+python3 - "$work/repo/hangar-access.sh" <<'PY'
+from pathlib import Path
+import runpy
+import sys
+old = runpy.run_path("/usr/libexec/hangar/hangar-portable", run_name="hangar_test")
+Path(sys.argv[1]).write_text(old["ACCESS_SCRIPT_V3"], encoding="utf-8")
+PY
+python3 /usr/libexec/hangar/hangar-portable access-kit portable-ci
+grep -q "Hangar standalone access kit v4" "$work/repo/hangar-access.sh"
+grep -q 'raw' "$work/repo/hangar-access.sh"
 cmp "$key" "$work/repo/hangar-access.key"
 
 # Simulate an old kit and upgrade it, WITHOUT replacing or losing its key.
@@ -57,7 +70,7 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 exec restic -r "$here" --password-file "$here/hangar-access.key" "$@"
 LEGACY
 python3 /usr/libexec/hangar/hangar-portable access-kit portable-ci
-grep -q "Hangar standalone access kit v3" "$work/repo/hangar-access.sh"
+grep -q "Hangar standalone access kit v4" "$work/repo/hangar-access.sh"
 cmp "$key" "$work/repo/hangar-access.key"
 
 # Even after removing Hangar's executable, the access-kit shell script works.

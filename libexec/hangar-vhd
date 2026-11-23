@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Create an offline, UEFI-bootable VHDX/VHD from a full Linux restic snapshot.
+"""Create an offline, UEFI-bootable VHDX/VHD/RAW from a full Linux restic snapshot.
 
 No VM, live-boot tooling, partition writes to host disks or host NVRAM changes.
 Only a NEW, private sparse RAW file is partitioned and mounted via a verified
-loop device; GRUB is installed into its EFI partition. No boot test is made.
+loop device; GRUB is installed into its EFI partition. RAW is published directly;
+VHDX/VHD outputs are converted afterwards. No boot test is made.
 """
 import argparse
 import json
@@ -25,7 +26,7 @@ SNAPSHOT = re.compile(r"(?:latest|[0-9a-fA-F]{64})\Z")
 KERNEL_VERSION = re.compile(r"[A-Za-z0-9._+-]+\Z")
 LOOP = re.compile(r"/dev/loop[0-9]+\Z")
 TOOLS = ("restic", "sfdisk", "losetup", "mkfs.vfat", "mkfs.ext4",
-         "mount", "umount", "blkid", "grub-install", "qemu-img")
+         "mount", "umount", "blkid", "grub-install")
 
 
 class ExportCancelled(Exception):
@@ -58,7 +59,7 @@ def emit(phase, detail, *, state="running", percent=None,
             if os.path.exists(name):
                 os.unlink(name)
     if state != "running" or percent is None:
-        print("VHDX: " + detail, flush=True)
+        print("Disk export: " + detail, flush=True)
 
 
 def on_cancel(_signal, _frame):
@@ -210,9 +211,10 @@ def convert_with_progress(raw, target, fmt):
 def output_format(path):
     if not path.is_absolute() or "\0" in str(path) or "\n" in str(path):
         abort("Use an absolute disk image output path.")
-    fmt = {".vhdx": "vhdx", ".vhd": "vpc"}.get(path.suffix.lower())
+    fmt = {".raw": "raw", ".img": "raw",
+           ".vhdx": "vhdx", ".vhd": "vpc"}.get(path.suffix.lower())
     if not fmt:
-        abort("Choose a .vhdx (recommended) or .vhd output filename.")
+        abort("Choose a .raw (recommended), .img, .vhdx or .vhd output filename.")
     if not path.parent.is_dir():
         abort("The destination directory does not exist.")
     if os.path.lexists(path):
@@ -226,10 +228,11 @@ def preflight(output):
         abort("Root is needed to mount a temporary disk image and preserve ownership.")
     if sys.platform != "linux" or platform.machine() not in ("x86_64", "amd64"):
         abort("Only x86_64 Linux with UEFI boot is supported by this builder.")
-    for tool in TOOLS:
+    tools = TOOLS + (("qemu-img",) if fmt != "raw" else ())
+    for tool in tools:
         if not shutil.which(tool):
-            abort("Missing '" + tool + "'. This export requires ordinary disk/EFI "
-                  "tools and qemu-img (qemu-utils), but no virtual machine.")
+            abort("Missing '" + tool + "'. This export requires disk/EFI tools" +
+                  (" and qemu-img for VHDX/VHD conversion." if fmt != "raw" else "."))
     if not Path("/usr/lib/grub/x86_64-efi").is_dir():
         abort("GRUB EFI modules unavailable (grub-efi-amd64-bin package).")
     return fmt
@@ -454,7 +457,7 @@ def make_raw(restic, snapshot, raw, mount_dir, size):
             raise RuntimeError("FAILED_TO_DETACH: " + ", ".join(problems))
 
 
-def publish_image(staged, output):
+def publish_image(staged, output, *, preserve_sparse=False):
     if os.path.lexists(output):
         abort("Destination was created during export; refusing to overwrite.")
     try:
@@ -465,7 +468,23 @@ def publish_image(staged, output):
         fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             with os.fdopen(fd, "wb") as dest, staged.open("rb") as src:
-                shutil.copyfileobj(src, dest, 1024 * 1024)
+                if preserve_sparse:
+                    # Filesystems without hard links (for example exFAT) must
+                    # not silently turn a sparse 100 GiB RAW file into a fully
+                    # allocated 100 GiB copy. Skip zero-filled blocks and
+                    # explicitly keep the original virtual length.
+                    zero = bytes(1024 * 1024)
+                    while True:
+                        chunk = src.read(len(zero))
+                        if not chunk:
+                            break
+                        if chunk == zero or (len(chunk) != len(zero) and not any(chunk)):
+                            dest.seek(len(chunk), os.SEEK_CUR)
+                        else:
+                            dest.write(chunk)
+                    dest.truncate(src.tell())
+                else:
+                    shutil.copyfileobj(src, dest, 1024 * 1024)
         except BaseException:
             output.unlink(missing_ok=True)
             raise
@@ -479,13 +498,13 @@ def publish_image(staged, output):
 def build(repo, password_file, snapshot, output, cache_dir=None, size=None):
     if not SNAPSHOT.fullmatch(snapshot):
         abort("Use 'latest' or a full 64-character snapshot ID.")
-    emit("Checking", "Checking VHDX prerequisites and snapshot size…")
+    emit("Checking", "Checking virtual disk prerequisites and snapshot size…")
     fmt = preflight(output)
     restic = restic_base(repo, password_file, cache_dir)
     logical = restore_bytes(restic, snapshot)
     size = disk_gib(logical, size)
     if fmt == "vpc" and size > 2040:
-        abort("Legacy VHD limit exceeded. Choose VHDX instead.")
+        abort("Legacy VHD limit exceeded. Choose RAW or VHDX instead.")
     print(f"Snapshot: {logical / GIB:.1f} GiB logical; image capacity: {size} GiB.",
           flush=True)
     print("This exports DECRYPTED data. No VM will be installed or started.", flush=True)
@@ -495,7 +514,8 @@ def build(repo, password_file, snapshot, output, cache_dir=None, size=None):
     try:
         work = Path(tempfile.mkdtemp(prefix=".hangar-vhd-", dir=output.parent))
         raw = work / "disk.raw"
-        target = work / "disk.vhdx" if fmt == "vhdx" else work / "disk.vhd"
+        target = raw if fmt == "raw" else (
+            work / "disk.vhdx" if fmt == "vhdx" else work / "disk.vhd")
         root = work / "root"
         root.mkdir()
         try:
@@ -504,15 +524,18 @@ def build(repo, password_file, snapshot, output, cache_dir=None, size=None):
             if str(exc).startswith("FAILED_TO_DETACH:"):
                 preserve = True
             raise
-        emit("Converting to VHDX", "Converting the virtual disk image…")
-        convert_with_progress(raw, target, fmt)
-        command(["qemu-img", "info", "-f", fmt, target],
-                stdout=subprocess.DEVNULL)
+        if fmt != "raw":
+            emit("Converting to " + output.suffix.upper(),
+                 "Converting the virtual disk image…")
+            convert_with_progress(raw, target, fmt)
+            command(["qemu-img", "info", "-f", fmt, target],
+                    stdout=subprocess.DEVNULL)
         if not target.is_file() or target.stat().st_size == 0:
-            abort("Conversion produced an empty virtual disk.")
+            abort("Disk image is missing or empty.")
         emit("Saving", "Publishing completed image without overwriting existing files…")
-        publish_image(target, output)
-        emit("Completed", "Bootable UEFI disk image created: " + str(output),
+        publish_image(target, output, preserve_sparse=(fmt == "raw"))
+        emit("Completed", "Bootable UEFI " + ("RAW" if fmt == "raw" else output.suffix.upper()) +
+             " disk image created: " + str(output),
              state="completed", percent=1)
         print("Boot has NOT been tested. Secure Boot is unsupported. "
               "The image contains decrypted private data.", flush=True)
@@ -547,13 +570,13 @@ if __name__ == "__main__":
         main()
     except ExportCancelled as exc:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        emit("Cancelled", "The VHDX export was cancelled.", state="cancelled")
+        emit("Cancelled", "The disk export was cancelled.", state="cancelled")
         print("Hangar bootable disk: " + str(exc), file=sys.stderr)
         sys.exit(130)
     except (ValueError, OSError, RuntimeError, subprocess.CalledProcessError,
             json.JSONDecodeError) as exc:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        emit("Failed", "VHDX export failed: " + str(exc), state="failed",
+        emit("Failed", "Disk export failed: " + str(exc), state="failed",
              error=str(exc))
         print("Hangar bootable disk: " + str(exc), file=sys.stderr)
         sys.exit(1)
