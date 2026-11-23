@@ -31,7 +31,14 @@ jobs:
             'sleep 5' > "$temp/rootfs/boot/grub/grub.cfg"
           echo "=== Host signed packages and GRUB install ==="
           dpkg -l grub-efi-amd64-signed shim-signed | tail -8
-          sudo grub-install --target=x86_64-efi --efi-directory="$temp/esp" --boot-directory="$temp/rootfs/boot" --removable --no-nvram
+          # GH runner doesn't have a mounted ESP; use the exact distribution-
+          # signed shim and GRUB binaries that grub-install deploys on a host.
+          shim=/usr/lib/shim/shimx64.efi.signed.latest
+          grub=/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed
+          test -s "$shim" || shim=/usr/lib/shim/shimx64.efi.signed
+          test -s "$shim" && test -s "$grub"
+          install -m 0644 "$shim" "$temp/esp/EFI/BOOT/BOOTX64.EFI"
+          install -m 0644 "$grub" "$temp/esp/EFI/BOOT/grubx64.efi"
           find "$temp/esp" -type f -printf '%P %s bytes\n'
           echo "=== Signature of EFI bootloader ==="
           sbverify --list "$temp/esp/EFI/BOOT/BOOTX64.EFI" || true
