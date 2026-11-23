@@ -21,6 +21,11 @@ jobs:
           python3 tests/integration/updater_helper_repair.py -v
       - name: Existing unit and smoke tests
         run: npm run test:unit && npm run test:smoke
+      - name: Browser UI wiring and Alpine binding tests
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+          npm run test:e2e
       - name: Real restic data ISO and standalone kit regression (no VM)
         run: |
           sudo apt-get update -qq
