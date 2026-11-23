@@ -178,6 +178,13 @@ def cancel():
         p = subprocess.run(["systemctl", "kill", "--kill-who=main", "--signal=TERM",
                             job["unit"]], capture_output=True, text=True)
         if p.returncode:
+            # The request was not accepted. Restore the Abort action rather
+            # than leaving an indefinitely disabled "Aborting…" button.
+            job["cancelling"] = False
+            atomic_json(CURRENT, job)
+            fresh = status()
+            if fresh.get("state") not in ("running", "cancelling"):
+                return fresh
             error((p.stderr or p.stdout).strip() or "Could not request cancellation")
         return status()
 
