@@ -250,7 +250,7 @@ class VirtualDiskTests(unittest.TestCase):
                 vhd.command(["fake"], stdout=None)
         terminate.assert_called_once_with(fake_proc)
 
-    def test_root_bootloader_embeds_correct_image_config_without_nvram(self):
+    def test_root_bootloader_installs_signed_efi_and_image_locators(self):
         # Exercise the full command sequence without actual root, loop devices,
         # grub-install, conversion or OS writes.
         with tempfile.TemporaryDirectory() as d:
@@ -271,13 +271,14 @@ class VirtualDiskTests(unittest.TestCase):
                     (root / "boot").mkdir(exist_ok=True)
                     (root / "boot/vmlinuz-6.8.0").write_text("kernel")
                     (root / "boot/initrd.img-6.8.0").write_text("initrd")
-                if op == "grub-mkstandalone":
-                    self.assertIn("--format=x86_64-efi", args)
-                    self.assertTrue(any(a.startswith("--modules=") for a in args))
-                    self.assertIn("boot/grub/grub.cfg=" +
-                                  str(root / "boot/efi/EFI/BOOT/grub.cfg"), args)
-                    loader = root / "boot/efi/EFI/BOOT/BOOTX64.EFI"
-                    loader.write_bytes(b"MZ" + bytes(2046))
+                if op == "grub-install":
+                    self.assertIn("--target=x86_64-efi", args)
+                    self.assertIn("--removable", args)
+                    self.assertIn("--no-nvram", args)
+                    self.assertTrue(any(x.startswith("--efi-directory=") for x in args))
+                    boot = root / "boot/efi/EFI/BOOT"
+                    boot.mkdir(parents=True)
+                    (boot / "BOOTX64.EFI").write_bytes(b"MZ" + bytes(2046))
             def do_restore(restic, snapshot, target):
                 cmd(["restic", "restore", snapshot, target])
             with patch.object(vhd, "command", side_effect=cmd), \
@@ -290,11 +291,17 @@ class VirtualDiskTests(unittest.TestCase):
                 vhd.make_raw(["restic"], "latest", raw, root, 16)
             self.assertEqual([a[0] for a in calls],
                              ["sfdisk", "mkfs.vfat", "mkfs.ext4", "mount",
-                              "restic", "mount", "grub-mkstandalone", "sync", "sync"])
+                              "restic", "mount", "grub-install", "sync", "sync"])
             esp_cfg = (root / "boot/efi/EFI/BOOT/grub.cfg").read_text()
             self.assertIn("550e8400-e29b-41d4-a716-446655440000", esp_cfg)
             self.assertNotIn("set prefix=", esp_cfg)
             self.assertIn("configfile ($root)/boot/grub/grub.cfg", esp_cfg)
+            # The signed Ubuntu GRUB binary can look under EFI/ubuntu even
+            # when launched via the removable EFI/BOOT path.
+            self.assertEqual(esp_cfg,
+                (root / "boot/efi/EFI/ubuntu/grub.cfg").read_text())
+            self.assertEqual(esp_cfg,
+                (root / "boot/efi/EFI/debian/grub.cfg").read_text())
             self.assertIn("550e8400-e29b-41d4-a716-446655440000",
                           (root / "boot/grub/grub.cfg").read_text())
 
@@ -333,7 +340,26 @@ class VirtualDiskTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unsafe essential directory"):
                 vhd.ensure_boot_directories(root)
 
-    def test_efi_standalone_launcher_has_valid_image_uuid_locator(self):
+    def test_inplace_raw_repair_refuses_running_vm_and_unsafe_input(self):
+        with tempfile.TemporaryDirectory() as d:
+            image = Path(d) / "disk.raw"
+            image.write_bytes(b"test-file")
+            link = Path(d) / "linked.raw"
+            link.symlink_to(image)
+            with patch.object(vhd.os, "geteuid", return_value=0):
+                with self.assertRaisesRegex(ValueError, "regular file"):
+                    vhd.repair_raw_image(link)
+                with self.assertRaisesRegex(ValueError, "absolute path"):
+                    vhd.repair_raw_image(Path("relative.raw"))
+                with self.assertRaisesRegex(ValueError, "absolute path"):
+                    vhd.repair_raw_image(Path(d) / "image.vhdx")
+                with patch.object(vhd.shutil, "which", return_value="/usr/bin/tool"), \
+                     patch.object(vhd.subprocess, "run",
+                                  return_value=type("Status", (), {"returncode": 0})()):
+                    with self.assertRaisesRegex(ValueError, "in use"):
+                        vhd.repair_raw_image(image)
+
+    def test_efi_vendor_paths_have_valid_image_uuid_locator(self):
         with tempfile.TemporaryDirectory() as d:
             esp = Path(d)
             boot = esp / "EFI/BOOT"
@@ -353,7 +379,7 @@ class VirtualDiskTests(unittest.TestCase):
             boot = esp / "EFI/BOOT"
             boot.mkdir(parents=True)
             (boot / "grub.cfg").symlink_to(Path(d) / "outside")
-            with self.assertRaisesRegex(ValueError, "symlinked"):
+            with self.assertRaisesRegex(ValueError, "unsafe EFI GRUB configuration"):
                 vhd.install_efi_grub_locator(
                     esp, "550e8400-e29b-41d4-a716-446655440000")
 
