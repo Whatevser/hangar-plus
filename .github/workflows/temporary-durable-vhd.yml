@@ -1,0 +1,28 @@
+name: Temporary durable VHDX validation
+on:
+  push:
+    branches: [feature/durable-vhd-progress]
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Python/JS syntax checks
+        run: |
+          python3 -m py_compile libexec/hangar-vhd libexec/hangar-vhd-job libexec/hangar-portable libexec/hangar-update
+          node --check js/features/logbook-ui.js
+          node --check js/features/repos-ui.js
+      - name: VHD job durability, loop cleanup, updater tests
+        run: |
+          python3 tests/integration/vhd_job_test.py -v
+          python3 tests/integration/vhd_test.py -v
+          python3 tests/integration/updater_helper_repair.py -v
+      - name: Existing unit and smoke tests
+        run: npm run test:unit && npm run test:smoke
+      - name: Real restic data ISO and standalone kit regression (no VM)
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq restic xorriso
+          sudo bash tests/integration/portable-live.sh
