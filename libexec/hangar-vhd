@@ -372,7 +372,7 @@ def install_standalone_grub(esp_dir, root_uuid):
         command(["grub-mkstandalone", "--format=x86_64-efi",
                  "--modules=part_gpt ext2 fat search_fs_uuid configfile normal linux",
                  "--output=" + str(staged),
-                 "boot/grub/grub.cfg=" + str(boot / "grub.cfg")],
+                 "/boot/grub/grub.cfg=" + str(boot / "grub.cfg")],
                 stdout=subprocess.DEVNULL)
         if staged.is_symlink() or not staged.is_file() or staged.stat().st_size < 1024:
             abort("Standalone UEFI GRUB executable was not created correctly.")
