@@ -2063,9 +2063,10 @@ test('VHDX action uses short systemd job control rather than long cockpit spawn'
         delete globalThis.confirm;
         delete globalThis.prompt;
     }
-    assert.equal(calls[0][0], '/usr/share/cockpit/hangar/libexec/hangar-vhd-job');
-    assert.deepEqual(calls[0].slice(1, 4), ['start', 'nas', 'a'.repeat(64)]);
-    assert.deepEqual(calls[1].slice(1), ['cancel']);
+    assert.deepEqual(calls[0].slice(0, 2), ['/usr/bin/python3',
+        '/usr/share/cockpit/hangar/libexec/hangar-vhd-job']);
+    assert.deepEqual(calls[0].slice(2, 5), ['start', 'nas', 'a'.repeat(64)]);
+    assert.deepEqual(calls[1].slice(2), ['cancel']);
 });
 
 test('VHDX state survives a new Logbook instance and displays a failure promptly', async () => {
