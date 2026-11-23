@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persistent VHDX export job controller.
+"""Persistent bootable disk export job controller.
 
 Commands are short-lived; the image is built by systemd independently of
 Cockpit's websocket. One active export per host prevents competing loop
@@ -112,7 +112,7 @@ def status():
                     (progress.get("warning") if running else None)),
     }
     if state == "failed" and not result["error"]:
-        result["error"] = ("VHDX service stopped before reporting completion. "
+        result["error"] = ("Disk export service stopped before reporting completion. "
                            "Check the systemd journal for " + job["unit"] + ".")
     if state in TERMINAL:
         # Include a bounded excerpt of the journal to diagnose errors instantly.
@@ -128,8 +128,8 @@ def start(repo, snapshot, output):
     if not REPO.fullmatch(repo) or not SNAPSHOT.fullmatch(snapshot):
         error("Choose a configured repository and full snapshot ID.")
     if not output.startswith("/") or "\n" in output or "\0" in output or \
-            not output.lower().endswith((".vhdx", ".vhd")):
-        error("Use an absolute .vhdx or .vhd output filename.")
+            not output.lower().endswith((".raw", ".img", ".vhdx", ".vhd")):
+        error("Use an absolute .raw, .img, .vhdx or .vhd output filename.")
     if os.path.lexists(output):
         error("Output already exists. No file was overwritten.")
     if not Path(output).parent.is_dir():
@@ -140,12 +140,12 @@ def start(repo, snapshot, output):
         error("Hangar's portable runner is missing. Update Hangar.")
     if not (Path(BUILDER).is_file() or
             Path("/usr/share/cockpit/hangar/libexec/hangar-vhd").is_file()):
-        error("VHDX builder missing. Update Hangar to repair the installation.")
+        error("Virtual disk builder missing. Update Hangar to repair the installation.")
     with LOCK.open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         previous = status()
         if previous.get("state") in ("running", "cancelling"):
-            error("An export is already running: " + previous.get("output", ""))
+            error("A disk export is already running: " + previous.get("output", ""))
         job_id = uuid.uuid4().hex[:16]
         unit = "hangar-vhd-" + job_id + ".service"
         job = {"job_id": job_id, "unit": unit, "repo": repo, "snapshot": snapshot,
@@ -208,7 +208,7 @@ def main(argv):
     elif argv == ["cancel"]:
         result = cancel()
     else:
-        error("Usage: hangar-vhd-job status|cancel|start REPO SNAPSHOT OUTPUT.vhdx")
+        error("Usage: hangar-vhd-job status|cancel|start REPO SNAPSHOT OUTPUT.raw")
     print(json.dumps(result, separators=(",", ":")))
 
 
@@ -216,5 +216,5 @@ if __name__ == "__main__":
     try:
         main(sys.argv[1:])
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
-        print("Hangar VHDX job: " + str(exc), file=sys.stderr)
+        print("Hangar disk job: " + str(exc), file=sys.stderr)
         sys.exit(1)
