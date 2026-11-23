@@ -168,7 +168,8 @@ def cancel():
     with LOCK.open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         current = status()
-        if current.get("state") not in ("running", "cancelling"):
+        if current.get("state") != "running":
+            # Do not send another SIGTERM while the builder is unmounting.
             return current
         job = read_json(CURRENT)
         job["cancelling"] = True
