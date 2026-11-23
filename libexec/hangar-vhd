@@ -27,7 +27,7 @@ SNAPSHOT = re.compile(r"(?:latest|[0-9a-fA-F]{64})\Z")
 KERNEL_VERSION = re.compile(r"[A-Za-z0-9._+-]+\Z")
 LOOP = re.compile(r"/dev/loop[0-9]+\Z")
 TOOLS = ("restic", "sfdisk", "losetup", "mkfs.vfat", "mkfs.ext4",
-         "mount", "umount", "blkid", "grub-install")
+         "mount", "umount", "blkid", "grub-mkstandalone")
 
 
 class ExportCancelled(Exception):
@@ -345,30 +345,55 @@ def make_efi_grub_locator(root_uuid):
         abort("Invalid image root UUID for EFI boot configuration.")
     return (
         f"search --no-floppy --fs-uuid --set=root {root_uuid}\n"
-        # Keep GRUB's module prefix: packaged signed EFI loaders may have
-        # module paths different from the restored /boot/grub location.
+        # Keep standalone GRUB's embedded module prefix; the restored system
+        # may not contain matching EFI GRUB modules under /boot/grub.
         "configfile ($root)/boot/grub/grub.cfg\n"
     )
 
 
-def install_distribution_grub(esp_dir, boot_directory, root_uuid):
-    """Install distro EFI binaries (signed when available) and UUID locators."""
-    command(["grub-install", "--target=x86_64-efi",
-             "--efi-directory=" + str(esp_dir),
-             "--boot-directory=" + str(boot_directory),
-             "--removable", "--no-nvram"],
-            stdout=subprocess.DEVNULL)
-    loader = esp_dir / "EFI/BOOT/BOOTX64.EFI"
-    if not loader.is_file() or loader.is_symlink():
-        abort("Removable EFI bootloader was not installed safely.")
+def install_standalone_grub(esp_dir, root_uuid):
+    """Write an autonomous UEFI loader with the image-specific menu locator embedded.
+
+    grub-install can use an EFI prefix tied to the builder's loop device or
+    distro directory. A sidecar EFI/BOOT/grub.cfg is insufficient when that
+    prefix is not searched by the signed/prebuilt GRUB image: the VM stops at
+    grub>. Embedding the UUID locator makes the removable loader independent
+    of those paths. The generated loader is unsigned (disable Secure Boot).
+    """
     install_efi_grub_locator(esp_dir, root_uuid)
+    boot = esp_dir / "EFI/BOOT"
+    loader = boot / "BOOTX64.EFI"
+    if loader.is_symlink() or (loader.exists() and not loader.is_file()):
+        abort("Refusing unsafe existing EFI bootloader.")
+    staged = boot / "BOOTX64.EFI.hangar-new"
+    if staged.exists() or staged.is_symlink():
+        abort("Refusing to replace unexpected staged EFI bootloader.")
+    try:
+        command(["grub-mkstandalone", "--format=x86_64-efi",
+                 "--modules=part_gpt ext2 fat search_fs_uuid configfile normal linux",
+                 "--output=" + str(staged),
+                 "/boot/grub/grub.cfg=" + str(boot / "grub.cfg")],
+                stdout=subprocess.DEVNULL)
+        if staged.is_symlink() or not staged.is_file() or staged.stat().st_size < 1024:
+            abort("Standalone UEFI GRUB executable was not created correctly.")
+        with staged.open("rb") as binary:
+            if binary.read(2) != b"MZ":
+                abort("Generated EFI bootloader has an invalid executable header.")
+        # Do not replace an existing (possibly signed) loader until the new
+        # image has been built and checked. repair-raw also keeps a backup.
+        os.replace(staged, loader)
+    finally:
+        if staged.is_file() and not staged.is_symlink():
+            staged.unlink()
+    print("Installed standalone EFI GRUB with embedded image-root UUID locator.",
+          flush=True)
 
 
 def install_efi_grub_locator(esp_dir, root_uuid):
-    """Support signed distro GRUB prefix paths without modifying EFI binaries.
+    """Write optional sidecar locators for alternate EFI loaders and debugging.
 
-    On Ubuntu/Mint, signed GRUB may search EFI/ubuntu/grub.cfg even when
-    the loader is installed via --removable into EFI/BOOT.
+    The standalone BOOTX64.EFI embeds the EFI/BOOT copy directly and does not
+    need to discover these files via a host-specific GRUB prefix.
     """
     efi = esp_dir / "EFI"
     if efi.is_symlink() or not efi.is_dir():
@@ -386,7 +411,7 @@ def install_efi_grub_locator(esp_dir, root_uuid):
         if locator.is_symlink() or (locator.exists() and not locator.is_file()):
             abort("Refusing to replace unsafe EFI GRUB configuration: " + str(locator))
         locator.write_text(payload, encoding="utf-8")
-    print("Configured signed GRUB locator in EFI/BOOT and vendor EFI directories.",
+    print("Configured EFI GRUB UUID locators in fallback and vendor directories.",
           flush=True)
 
 
@@ -512,8 +537,8 @@ def make_raw(restic, snapshot, raw, mount_dir, size):
         esp_dir.mkdir(parents=True, exist_ok=True)
         command(["mount", "-t", "vfat", efi, esp_dir])
         efi_mounted = True
-        emit("Installing GRUB", "Installing distro GRUB EFI files and image-specific menu locator…")
-        install_distribution_grub(esp_dir, mount_dir / "boot", root_uuid)
+        emit("Installing GRUB", "Embedding the image-specific boot locator in standalone UEFI GRUB…")
+        install_standalone_grub(esp_dir, root_uuid)
         emit("Syncing", "Flushing the virtual filesystems to disk…")
         command(["sync", "-f", esp_dir])
         command(["sync", "-f", mount_dir])
@@ -545,7 +570,7 @@ def repair_raw_image(image):
         abort("Specify an absolute path to a .raw or .img disk image.")
     if image.is_symlink() or not image.is_file() or not stat.S_ISREG(image.stat().st_mode):
         abort("RAW image must be a regular file, not a symlink.")
-    for tool in ("fuser", "losetup", "blkid", "mount", "umount", "grub-install"):
+    for tool in ("fuser", "losetup", "blkid", "mount", "umount", "grub-mkstandalone"):
         if not shutil.which(tool):
             abort("Missing required repair tool: " + tool)
     # Prevent corruption when a running VM is using the same image. Running
@@ -597,8 +622,8 @@ def repair_raw_image(image):
             backup = boot / "BOOTX64.EFI.before-hangar-repair"
             if not backup.exists():
                 shutil.copyfile(loader, backup)
-        print("Reinstalling distribution EFI bootloader in RAW image…", flush=True)
-        install_distribution_grub(esp, work / "boot", root_uuid)
+        print("Replacing EFI bootloader with self-contained GRUB in RAW image…", flush=True)
+        install_standalone_grub(esp, root_uuid)
         command(["sync", "-f", str(esp)])
         command(["sync", "-f", str(work)])
         print("EFI and essential-directory repair completed inside " + str(image),
@@ -700,8 +725,8 @@ def build(repo, password_file, snapshot, output, cache_dir=None, size=None):
         emit("Completed", "Bootable UEFI " + ("RAW" if fmt == "raw" else output.suffix.upper()) +
              " disk image created: " + str(output),
              state="completed", percent=1)
-        print("Boot has NOT been tested. Secure Boot requires signed EFI "
-              "binaries from the host distribution; availability varies. "
+        print("Boot has NOT been tested. Disable guest Secure Boot: Hangar's "
+              "self-contained EFI GRUB executable is unsigned. "
               "The image contains decrypted private data.", flush=True)
     finally:
         if work and not preserve:
