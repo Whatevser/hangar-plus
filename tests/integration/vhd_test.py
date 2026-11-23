@@ -277,6 +277,10 @@ class VirtualDiskTests(unittest.TestCase):
                     self.assertIn("--no-nvram", args)
                     (root / "boot/efi/EFI/BOOT").mkdir(parents=True)
                     (root / "boot/efi/EFI/BOOT/BOOTX64.EFI").write_text("grub")
+                    # grub-install can create a locator referring to a
+                    # temporary host mount; Hangar must replace it afterwards.
+                    (root / "boot/efi/EFI/BOOT/grub.cfg").write_text(
+                        "search --fs-uuid --set=root wrong-host-uuid\n")
             def do_restore(restic, snapshot, target):
                 cmd(["restic", "restore", snapshot, target])
             with patch.object(vhd, "command", side_effect=cmd), \
@@ -290,6 +294,35 @@ class VirtualDiskTests(unittest.TestCase):
             self.assertEqual([a[0] for a in calls],
                              ["sfdisk", "mkfs.vfat", "mkfs.ext4", "mount",
                               "restic", "mount", "grub-install", "sync", "sync"])
+            esp_cfg = (root / "boot/efi/EFI/BOOT/grub.cfg").read_text()
+            self.assertIn("550e8400-e29b-41d4-a716-446655440000", esp_cfg)
+            self.assertIn("set prefix=($root)/boot/grub", esp_cfg)
+            self.assertIn("configfile $prefix/grub.cfg", esp_cfg)
+            self.assertNotIn("wrong-host-uuid", esp_cfg)
+            self.assertIn("550e8400-e29b-41d4-a716-446655440000",
+                          (root / "boot/grub/grub.cfg").read_text())
+
+    def test_efi_locator_rejects_bad_uuid_and_symlink(self):
+        with self.assertRaisesRegex(ValueError, "Invalid image root UUID"):
+            vhd.make_efi_grub_locator("wrong; command")
+        with tempfile.TemporaryDirectory() as d:
+            esp = Path(d)
+            boot = esp / "EFI/BOOT"
+            boot.mkdir(parents=True)
+            (boot / "grub.cfg").symlink_to(Path(d) / "outside")
+            with self.assertRaisesRegex(ValueError, "symlinked"):
+                vhd.install_efi_grub_locator(
+                    esp, "550e8400-e29b-41d4-a716-446655440000")
+
+    def test_efi_locator_is_image_specific_not_host_specific(self):
+        a = vhd.make_efi_grub_locator(
+            "550e8400-e29b-41d4-a716-446655440000")
+        b = vhd.make_efi_grub_locator(
+            "a1f8f726-22f9-49c0-a799-4ddbaef579fb")
+        self.assertNotEqual(a, b)
+        self.assertIn("search --no-floppy --fs-uuid", a)
+        self.assertIn("configfile $prefix/grub.cfg", a)
+        self.assertNotIn("/dev/loop", a)
 
 
 if __name__ == "__main__":
