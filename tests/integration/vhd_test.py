@@ -143,7 +143,10 @@ class VirtualDiskTests(unittest.TestCase):
                     self.assertIn("--no-nvram", args)
                     (root / "boot/efi/EFI/BOOT").mkdir(parents=True)
                     (root / "boot/efi/EFI/BOOT/BOOTX64.EFI").write_text("grub")
+            def do_restore(restic, snapshot, target):
+                cmd(["restic", "restore", snapshot, target])
             with patch.object(vhd, "command", side_effect=cmd), \
+                 patch.object(vhd, "restore_with_progress", side_effect=do_restore), \
                  patch.object(vhd, "check_output",
                               side_effect=["/dev/loop42", "550e8400-e29b-41d4-a716-446655440000", "ABCD-0123"]), \
                  patch.object(vhd, "verify_loop"), \
