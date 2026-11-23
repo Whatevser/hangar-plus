@@ -1903,7 +1903,7 @@
 '              :disabled="!canDownload() || busy" @click="download()">Download</button>' +
 '      <button type="button" class="btn btn-sm btn-primary"' +
 '              title="Create an unencrypted data ISO from the selected complete snapshot (requires xorriso)."' +
-'              :disabled="!moment || busy" @click="createIso()">Create ISO…</button>' +
+'              :disabled="!moment || busy || vhdIsRunning()" @click="createIso()">Create ISO…</button>' +
 '      <button type="button" class="btn btn-sm" :class="vhdIsRunning() ? \'btn-danger\' : \'btn-primary\'"' +
 '              title="Run a durable background VHDX export; click again to abort an active build."' +
 '              :disabled="vhdStartPending || vhdAbortPending || vhdJob.state === \'cancelling\' || (!vhdIsRunning() && (!moment || busy))"' +
@@ -1914,7 +1914,7 @@
      // else is in flight: it is the one control on this screen that destroys
      // something.
 '      <button type="button" class="btn btn-sm btn-outline-danger"' +
-'              :disabled="!moment || busy" @click="deleteMoment()"' +
+'              :disabled="!moment || busy || vhdIsRunning()" @click="deleteMoment()"' +
 '              :aria-label="\'Delete the snapshot from \' + momentLabel()">Delete snapshot…</button>' +
 '      <span class="small text-secondary" x-text="selectionLabel()"></span>' +
 
@@ -1952,6 +1952,7 @@
 '        </div>' +
 '      </template>' +
 '      <div class="small hangar-mono mt-1" x-show="vhdProgressText()" x-text="vhdProgressText()"></div>' +
+'      <div class="alert alert-warning small mt-2 mb-0" x-show="vhdJob.warning" role="alert" x-text="vhdJob.warning"></div>' +
 '      <div class="alert alert-danger small mt-2 mb-0" x-show="vhdJob.state === \'failed\'" role="alert" x-text="vhdJob.error"></div>' +
 '      <div class="alert alert-warning small mt-2 mb-0" x-show="vhdConnection" x-text="vhdConnection"></div>' +
 '      <button type="button" class="btn btn-sm btn-primary mt-2" x-show="vhdJob.log" @click="vhdShowLog = !vhdShowLog" x-text="vhdShowLog ? \'Hide log\' : \'Show log\'"></button>' +
