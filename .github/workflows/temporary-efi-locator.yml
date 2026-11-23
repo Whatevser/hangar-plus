@@ -15,3 +15,64 @@ jobs:
           python3 tests/integration/vhd_job_test.py -v
           npm run test:unit
           npm run test:smoke
+
+      - name: Boot a synthetic GPT/EFI/ext4 RAW disk in OVMF and check automatic GRUB config loading
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq grub-efi-amd64-bin qemu-system-x86 ovmf dosfstools e2fsprogs fdisk mtools
+          set -euo pipefail
+          temp="$(mktemp -d)"
+          trap 'rm -rf "$temp"' EXIT
+          python3 - "$temp" <<'PY'
+          import importlib.machinery
+          import importlib.util
+          import pathlib
+          import sys
+          target = pathlib.Path("libexec/hangar-vhd")
+          loader = importlib.machinery.SourceFileLoader("vhd", str(target))
+          spec = importlib.util.spec_from_loader(loader.name, loader)
+          vhd = importlib.util.module_from_spec(spec)
+          loader.exec_module(vhd)
+          root = pathlib.Path(sys.argv[1])
+          (root / "EFI").mkdir()
+          (root / "EFI/BOOT").mkdir()
+          vhd.install_efi_grub_locator(root, "550e8400-e29b-41d4-a716-446655440000")
+          dest = root / "EFI/BOOT/BOOTX64.EFI"
+          import subprocess
+          subprocess.run(["grub-mkstandalone", "--format=x86_64-efi",
+              "--modules=part_gpt ext2 fat search_fs_uuid configfile normal linux",
+              "--output=" + str(dest),
+              "boot/grub/grub.cfg=" + str(root / "EFI/BOOT/grub.cfg")],check=True)
+          assert dest.read_bytes()[:2] == b"MZ", "EFI PE signature absent"
+          print("EFI executable: ", dest.stat().st_size, "bytes")
+          PY
+          mkdir -p "$temp/rootfs/boot/grub"
+          printf '%s\n' \
+            'serial --unit=0 --speed=115200' \
+            'terminal_output serial' \
+            'echo HANGAR_AUTOMATIC_GRUB_MENU_LOADED' \
+            'sleep 10' > "$temp/rootfs/boot/grub/grub.cfg"
+          truncate -s 256M "$temp/disk.raw"
+          printf 'label: gpt\nunit: sectors\n\n2048,131072,U\n133120,,L\n' | sfdisk --wipe always "$temp/disk.raw"
+          truncate -s 64M "$temp/esp.img"
+          mkfs.vfat -F 32 -n HANGAR_EFI "$temp/esp.img"
+          mmd -i "$temp/esp.img" ::/EFI
+          mmd -i "$temp/esp.img" ::/EFI/BOOT
+          mcopy -i "$temp/esp.img" "$temp/EFI/BOOT/BOOTX64.EFI" ::/EFI/BOOT/BOOTX64.EFI
+          mcopy -i "$temp/esp.img" "$temp/EFI/BOOT/grub.cfg" ::/EFI/BOOT/grub.cfg
+          truncate -s 188M "$temp/root.img"
+          mkfs.ext4 -q -F -U 550e8400-e29b-41d4-a716-446655440000 -d "$temp/rootfs" "$temp/root.img"
+          dd if="$temp/esp.img" of="$temp/disk.raw" bs=1M seek=1 conv=notrunc status=none
+          dd if="$temp/root.img" of="$temp/disk.raw" bs=1M seek=65 conv=notrunc status=none
+          firmware=/usr/share/OVMF/OVMF_CODE_4M.fd
+          if [ ! -f "$firmware" ]; then firmware=/usr/share/OVMF/OVMF_CODE.fd; fi
+          set +e
+          timeout 45s qemu-system-x86_64 -machine q35,accel=tcg -m 256 -bios "$firmware" \
+            -drive "file=$temp/disk.raw,format=raw,if=virtio" \
+            -boot order=c -serial stdio -display none -monitor none -no-reboot \
+            > "$temp/serial.log" 2>&1
+          rc=$?
+          set -e
+          echo "QEMU exit status $rc"
+          tail -70 "$temp/serial.log"
+          grep -F HANGAR_AUTOMATIC_GRUB_MENU_LOADED "$temp/serial.log"
