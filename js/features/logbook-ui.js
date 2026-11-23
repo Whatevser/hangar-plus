@@ -715,6 +715,16 @@
             notice: '',
             noticeKind: 'success',
             progress: null,
+            // The VHD export runs as an independent systemd service, NOT a
+            // Cockpit child process. Status survives tab close and re-login.
+            vhdJob: { state: 'idle' },
+            vhdConnection: '',
+            vhdShowLog: false,
+            vhdStartPending: false,
+            vhdAbortPending: false,
+            _vhdTimer: null,
+            _vhdPolling: false,
+            _vhdStopped: false,
 
             idleSec: 900,
             mountRootSetting: '',
@@ -735,8 +745,12 @@
                     // A FUSE mount outlives the page by design, so leaving without
                     // dropping it would strand it until the idle timer fires.
                     root.addEventListener('hangar:settings-saved', (event) => this.applyMountSettings(event.detail));
-                    root.addEventListener('pagehide', () => { this.releaseMount(); });
+                    root.addEventListener('pagehide', () => {
+                        this.releaseMount();
+                        this.stopVhdMonitor();
+                    });
                 }
+                this.startVhdMonitor();
                 await this.loadRepos();
             },
 
@@ -1338,32 +1352,129 @@
                 }
             },
 
-            // --- bootable VHDX/VHD disk image (no VM, no boot test) ---------
+            // --- durable, reconnectable VHDX export -------------------------
+            vhdIsRunning() {
+                return this.vhdJob && ['running', 'cancelling'].includes(this.vhdJob.state);
+            },
+
+            vhdPercent() {
+                const p = this.vhdJob && this.vhdJob.percent;
+                return typeof p === 'number' && Number.isFinite(p)
+                    ? Math.round(Math.max(0, Math.min(1, p)) * 100) : null;
+            },
+
+            vhdProgressText() {
+                const j = this.vhdJob || {};
+                const p = this.vhdPercent();
+                const bytes = Number(j.bytes_done), total = Number(j.total_bytes);
+                const pieces = [];
+                if (p !== null) pieces.push(p + '% of this phase');
+                if (Number.isFinite(bytes) && bytes > 0)
+                    pieces.push(formatBytes(bytes) +
+                        (Number.isFinite(total) && total > 0 ? ' / ' + formatBytes(total) : ''));
+                return pieces.join(' · ');
+            },
+
+            vhdElapsed() {
+                const started = Number(this.vhdJob && this.vhdJob.started);
+                if (!Number.isFinite(started) || started <= 0) return '';
+                const secs = Math.max(0, Math.floor(Date.now() / 1000 - started));
+                const minutes = Math.floor(secs / 60);
+                return minutes ? minutes + 'm ' + (secs % 60) + 's elapsed' : secs + 's elapsed';
+            },
+
+            async vhdRequest(args) {
+                if (!hasCockpit())
+                    throw fail('Cockpit connection unavailable. The export continues independently.');
+                const text = await cockpit.spawn(['/usr/libexec/hangar/hangar-vhd-job'].concat(args),
+                    { superuser: 'require', err: 'message' });
+                return JSON.parse(text);
+            },
+
+            async refreshVhdStatus() {
+                if (this._vhdPolling) return;
+                this._vhdPolling = true;
+                try {
+                    const job = await this.vhdRequest(['status']);
+                    this.vhdJob = job;
+                    this.vhdConnection = '';
+                    if (['completed', 'failed', 'cancelled'].includes(job.state))
+                        this.vhdAbortPending = false;
+                } catch (e) {
+                    // Never interpret the loss of the browser connection as the
+                    // worker failing. systemd continues independently.
+                    this.vhdConnection = 'Cannot read live status from Cockpit. ' +
+                        'The background job is not stopped; status will reconnect automatically.';
+                } finally {
+                    this._vhdPolling = false;
+                }
+            },
+
+            startVhdMonitor() {
+                if (!root.document || typeof root.setTimeout !== 'function') return;
+                this._vhdStopped = false;
+                if (this._vhdTimer !== null) return;
+                const tick = async () => {
+                    this._vhdTimer = null;
+                    if (this._vhdStopped) return;
+                    await this.refreshVhdStatus();
+                    if (!this._vhdStopped)
+                        this._vhdTimer = root.setTimeout(tick, this.vhdIsRunning() ? 1200 : 4500);
+                };
+                this._vhdTimer = root.setTimeout(tick, 0);
+            },
+
+            stopVhdMonitor() {
+                this._vhdStopped = true;
+                if (this._vhdTimer !== null && typeof root.clearTimeout === 'function')
+                    root.clearTimeout(this._vhdTimer);
+                this._vhdTimer = null;
+            },
+
+            destroy() { this.stopVhdMonitor(); },
+
             async createVhdx() {
-                if (!this.moment || this.busy || typeof root.prompt !== 'function') return;
+                if (this.vhdIsRunning() || this.vhdStartPending || this.busy ||
+                    !this.moment || typeof root.prompt !== 'function') return;
                 if (typeof root.confirm !== 'function' || !root.confirm(
-                    'Create a DECRYPTED, bootable UEFI virtual disk from this entire Linux snapshot? ' +
-                    'It needs a full system backup (not /home only) and disk/GRUB/qemu-img tools ' +
-                    'on the Cockpit host. The image will contain unencrypted keys and credentials. ' +
-                    'It will NOT start a VM or write to physical disks. Continue?')) return;
+                    'Create a DECRYPTED UEFI disk from this complete Linux snapshot? ' +
+                    'It contains unencrypted keys and credentials. The build runs as a ' +
+                    'systemd job even if Cockpit disconnects. No VM or boot test is performed. Continue?')) return;
                 const initial = '/var/tmp/hangar-' + this.moment.id.slice(0, 12) + '.vhdx';
-                const name = root.prompt(
-                    'Save bootable disk on the Cockpit host (.vhdx recommended, .vhd supported):',
-                    initial);
-                if (!name) return;
-                this.beginBusy('Creating bootable virtual disk…');
+                const name = root.prompt('Save bootable VHDX on this host (.vhdx or .vhd):', initial);
+                if (!name || !name.trim()) return;
+                this.vhdStartPending = true;
                 this.clearStatus();
                 try {
-                    await cockpit.spawn(['/usr/libexec/hangar/hangar-portable', 'vhdx',
-                        this.repoId, this.moment.id, name.trim()],
-                        { superuser: 'require', err: 'message' });
-                    this.noticeKind = 'success';
-                    this.notice = 'Bootable UEFI virtual disk created at ' + name.trim() +
-                        '. No VM or boot test was run; Secure Boot is unsupported.';
+                    this.vhdJob = await this.vhdRequest(['start', this.repoId,
+                        this.moment.id, name.trim()]);
+                    this.vhdShowLog = false;
+                    this.vhdConnection = '';
+                } catch (e) {
+                    this.handleError(e);
+                    // Even an interrupted start response can mean the server
+                    // successfully launched the job: status is authoritative.
+                    await this.refreshVhdStatus();
+                } finally {
+                    this.vhdStartPending = false;
+                }
+            },
+
+            async abortVhdx() {
+                if (!this.vhdIsRunning() || this.vhdAbortPending ||
+                    this.vhdJob.state === 'cancelling') return;
+                if (typeof root.confirm === 'function' && !root.confirm(
+                    'Abort this VHDX build? Restoring/conversion will stop, and temporary loop mounts ' +
+                    'will be cleaned up. The backup snapshot is not affected.')) return;
+                this.vhdAbortPending = true;
+                try {
+                    this.vhdJob = await this.vhdRequest(['cancel']);
+                    this.vhdConnection = '';
                 } catch (e) {
                     this.handleError(e);
                 } finally {
-                    this.endBusy();
+                    this.vhdAbortPending = false;
+                    await this.refreshVhdStatus();
                 }
             },
 
@@ -1787,15 +1898,17 @@
 
 '      <button type="button" class="btn btn-sm btn-primary"' +
 '              :disabled="!selected.length || busy" @click="restore()">Restore…</button>' +
-'      <button type="button" class="btn btn-sm btn-outline-secondary"' +
+'      <button type="button" class="btn btn-sm btn-primary"' +
 '              title="Select one file or folder. Folders download as ZIP archives."' +
 '              :disabled="!canDownload() || busy" @click="download()">Download</button>' +
-'      <button type="button" class="btn btn-sm btn-outline-secondary"' +
+'      <button type="button" class="btn btn-sm btn-primary"' +
 '              title="Create an unencrypted data ISO from the selected complete snapshot (requires xorriso)."' +
 '              :disabled="!moment || busy" @click="createIso()">Create ISO…</button>' +
-'      <button type="button" class="btn btn-sm btn-outline-secondary"' +
-'              title="Build a bootable UEFI disk image from a complete Linux snapshot. No VM or boot test; qemu-img is just a converter."' +
-'              :disabled="!moment || busy" @click="createVhdx()">Create VHDX…</button>' +
+'      <button type="button" class="btn btn-sm" :class="vhdIsRunning() ? \'btn-danger\' : \'btn-primary\'"' +
+'              title="Run a durable background VHDX export; click again to abort an active build."' +
+'              :disabled="vhdStartPending || vhdAbortPending || vhdJob.state === \'cancelling\' || (!vhdIsRunning() && (!moment || busy))"' +
+'              @click="vhdIsRunning() ? abortVhdx() : createVhdx()"' +
+'              x-text="vhdJob.state === \'cancelling\' ? \'Aborting…\' : (vhdIsRunning() ? \'Abort VHDX\' : (vhdStartPending ? \'Starting…\' : \'Create VHDX…\'))"></button>' +
 
      // Deliberately last, outline rather than solid, and disabled while anything
      // else is in flight: it is the one control on this screen that destroys
@@ -1818,10 +1931,32 @@
 '      <div class="input-group input-group-sm">' +
 '        <input id="hangar-mounted-folder" type="text" class="form-control hangar-mono"' +
 '               readonly :value="mountedFolder()" x-ref="mountedFolder">' +
-'        <button type="button" class="btn btn-outline-secondary"' +
+'        <button type="button" class="btn btn-primary"' +
 '                @click="copyMountedFolder($refs.mountedFolder)">Copy path</button>' +
 '      </div>' +
 '    </div>' +
+
+
+'    <section x-show="vhdJob && vhdJob.state !== \'idle\'" class="m-2 p-3 border rounded" aria-label="VHDX export progress" role="status" aria-live="polite">' +
+'      <div class="d-flex align-items-center gap-2 flex-wrap">' +
+'        <strong>VHDX export</strong>' +
+'        <span class="badge" :class="vhdJob.state === \'failed\' ? \'text-bg-danger\' : (vhdJob.state === \'completed\' ? \'text-bg-success\' : \'text-bg-secondary\')" x-text="vhdJob.state"></span>' +
+'        <span class="small text-secondary ms-auto" x-text="vhdElapsed()"></span>' +
+'      </div>' +
+'      <div class="small hangar-mono text-break" x-text="vhdJob.output"></div>' +
+'      <div class="small fw-semibold mt-2" x-text="vhdJob.phase"></div>' +
+'      <div class="small" x-text="vhdJob.detail"></div>' +
+'      <template x-if="vhdPercent() !== null">' +
+'        <div class="progress mt-2" role="progressbar" :aria-valuenow="vhdPercent()" aria-valuemin="0" aria-valuemax="100" :aria-label="vhdJob.phase">' +
+'          <div class="progress-bar" :style="\'width: \' + vhdPercent() + \'%\'"></div>' +
+'        </div>' +
+'      </template>' +
+'      <div class="small hangar-mono mt-1" x-show="vhdProgressText()" x-text="vhdProgressText()"></div>' +
+'      <div class="alert alert-danger small mt-2 mb-0" x-show="vhdJob.state === \'failed\'" role="alert" x-text="vhdJob.error"></div>' +
+'      <div class="alert alert-warning small mt-2 mb-0" x-show="vhdConnection" x-text="vhdConnection"></div>' +
+'      <button type="button" class="btn btn-sm btn-primary mt-2" x-show="vhdJob.log" @click="vhdShowLog = !vhdShowLog" x-text="vhdShowLog ? \'Hide log\' : \'Show log\'"></button>' +
+'      <pre class="hangar-rawlog small mt-2 mb-0" x-show="vhdShowLog && vhdJob.log" x-text="vhdJob.log"></pre>' +
+'    </section>' +
 
 '    <div x-show="busy" class="p-2 small text-secondary" role="status" aria-live="polite">' +
 '      <span x-text="busyLabel"></span>' +
@@ -1842,7 +1977,7 @@
 '         role="status" aria-live="polite">' +
 '      <div class="d-flex align-items-center gap-3">' +
 '        <strong class="flex-grow-1" x-text="unreadableTitle || \'Some files could not be read.\'"></strong>' +
-'        <button type="button" class="btn btn-sm btn-outline-secondary"' +
+'        <button type="button" class="btn btn-sm btn-primary"' +
 '                @click="showUnreadable = !showUnreadable" :aria-expanded="showUnreadable"' +
 '                aria-controls="hangar-logbook-unreadable"' +
 '                x-text="showUnreadable ? \'Hide the list\' : \'Show the list\'"></button>' +
@@ -1856,7 +1991,7 @@
 '      <div class="d-flex align-items-center gap-3">' +
 '        <div class="flex-grow-1 small" x-text="error && error.message"></div>' +
 '        <button type="button" class="btn btn-sm"' +
-'                :class="error && error.fatal ? \'btn-outline-danger\' : \'btn-outline-secondary\'"' +
+'                :class="error && error.fatal ? \'btn-outline-danger\' : \'btn-primary\'"' +
 '                x-show="error && error.action" @click="remediate()"' +
 '                x-text="error && error.actionLabel"></button>' +
 '      </div>' +
