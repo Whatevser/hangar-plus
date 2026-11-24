@@ -2115,6 +2115,10 @@ test('restore verifies contents and treats a picked filename as literal', async 
 });
 
 
+test('Logbook has no Create ISO control', () => {
+    assert.doesNotMatch(UI.template(), /Create ISO|createIso\(/);
+});
+
 // --- durable bootable disk job -----------------------------------------------------
 test('disk export takes the extension from the dropdown and starts the durable job', async () => {
     const c = attached();
@@ -2148,6 +2152,26 @@ test('disk export takes the extension from the dropdown and starts the durable j
     assert.deepEqual(calls[0].slice(2, 5), ['start', 'nas', 'a'.repeat(64)]);
     assert.equal(calls[0][5], '/var/tmp/recovered.vhdx');
     assert.deepEqual(calls[1].slice(2), ['cancel']);
+});
+
+test('closing disk export with Escape/backdrop resolves cancellation', async () => {
+    let onHidden = null;
+    const modal = { addEventListener: (type, listener) => {
+        assert.equal(type, 'hidden.bs.modal');
+        onHidden = listener;
+    } };
+    await withPatched(globalThis, {
+        document: { getElementById: (id) => id === UI.DISK_MODAL_ID ? modal : null },
+        addEventListener: () => {}
+    }, async () => {
+        const d = UI.hangarDiskExport();
+        d.init();
+        let settled = 'pending';
+        d._resolve = (value) => { settled = value; };
+        onHidden();
+        assert.equal(settled, null);
+        assert.equal(d._resolve, null);
+    });
 });
 
 test('disk picker refuses a typed extension and accepts each format', () => {
