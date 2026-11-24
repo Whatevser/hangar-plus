@@ -169,7 +169,7 @@ The mount location, idle-unmount interval, and **Allow local access** setting li
 
 ### Progress, cancellation, and reconnection
 
-Exports run as **independent transient systemd services**, coordinated by `hangar-vhd-job`. Logbook shows live **restic restore percentage/bytes**, preparation/bootloader stages, and **conversion percentage** when converting to VHDX/VHD. It records errors and final status in private files under `/var/lib/hangar/vhd/`.
+Exports run as **independent transient systemd services**, coordinated by `hangar-vhd-job`. Logbook shows live **restic restore percentage/bytes**, preparation/bootloader stages, and **conversion percentage** when converting to VHD/VHDX/QCOW2/VDI/VMDK. It records errors and final status in private files under `/var/lib/hangar/vhd/`.
 
 While active, **Create disk…** changes to **Abort disk**. Cancellation requests stop the worker, terminate the current child command, and attempt to unmount/detach temporary devices safely. A Cockpit WebSocket disconnect or browser close **does not terminate the export**; open Logbook again to recover the saved status. Only **one disk export per host** runs at once.
 
