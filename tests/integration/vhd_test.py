@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline bootable RAW/VHDX export safety and assembly tests, without starting a VM."""
+"""Offline bootable disk-format export safety and assembly tests, without a VM."""
 import importlib.machinery
 import importlib.util
 import os
@@ -23,7 +23,10 @@ class VirtualDiskTests(unittest.TestCase):
             self.assertEqual(vhd.output_format(target), "vhdx")
             self.assertEqual(vhd.output_format(Path(d) / "disk.raw"), "raw")
             self.assertEqual(vhd.output_format(Path(d) / "disk.img"), "raw")
-            self.assertEqual(vhd.output_format(Path(d) / "legacy.vhd"), "vpc")
+            for suffix, expected in ((".vhd", "vpc"), (".qcow2", "qcow2"),
+                                     (".vdi", "vdi"), (".vmdk", "vmdk")):
+                with self.subTest(format=suffix):
+                    self.assertEqual(vhd.output_format(Path(d) / ("disk" + suffix)), expected)
             with self.assertRaisesRegex(ValueError, r"\.raw"):
                 vhd.output_format(Path(d) / "not-bootable.iso")
             target.write_bytes(b"original")
@@ -38,65 +41,72 @@ class VirtualDiskTests(unittest.TestCase):
             vhd.publish_image(staged, target)
             self.assertEqual(target.read_bytes(), b"new")
 
-    def test_raw_skips_conversion_and_keeps_sparse_virtual_length(self):
-        with tempfile.TemporaryDirectory() as d:
-            output = Path(d) / "recovered.raw"
-            password = Path(d) / "key"
-            password.write_text("test-secret")
-            def fake_raw(restic, snapshot, raw, root, size):
-                # This is intentionally a sparse file, like the real builder.
-                with raw.open("wb") as f:
-                    f.truncate(16 * 1024 * 1024)
-                    f.seek(512)
-                    f.write(b"EFI TEST DATA")
-            with patch.object(vhd, "preflight", side_effect=vhd.output_format), \
-                 patch.object(vhd, "restore_bytes", return_value=1024), \
-                 patch.object(vhd, "make_raw", side_effect=fake_raw), \
-                 patch.object(vhd, "convert_with_progress", side_effect=AssertionError(
-                     "RAW must never be converted")), \
-                 patch.object(vhd, "command", side_effect=AssertionError(
-                     "RAW must never call qemu-img")), \
-                 patch.object(vhd, "PROGRESS_FILE", None):
-                vhd.build("/repo", password, "latest", output)
-            self.assertEqual(output.stat().st_size, 16 * 1024 * 1024)
-            with output.open("rb") as f:
-                f.seek(512)
-                self.assertEqual(f.read(13), b"EFI TEST DATA")
-            # On Linux filesystems where sparse support exists, no full-capacity
-            # 16 MiB allocation should have appeared.
-            self.assertLess(output.stat().st_blocks * 512, output.stat().st_size // 2)
+    def test_raw_and_img_skip_conversion_and_keep_sparse_virtual_length(self):
+        for suffix in (".raw", ".img"):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as d:
+                output = Path(d) / ("recovered" + suffix)
+                password = Path(d) / "key"
+                password.write_text("test-secret")
+                def fake_raw(restic, snapshot, raw, root, size):
+                    with raw.open("wb") as fh:
+                        fh.truncate(16 * 1024 * 1024)
+                        fh.seek(512)
+                        fh.write(b"EFI TEST DATA")
+                with patch.object(vhd, "preflight", side_effect=vhd.output_format), \
+                     patch.object(vhd, "restore_bytes", return_value=1024), \
+                     patch.object(vhd, "make_raw", side_effect=fake_raw), \
+                     patch.object(vhd, "convert_with_progress", side_effect=AssertionError(
+                         "RAW/IMG must never be converted")), \
+                     patch.object(vhd, "command", side_effect=AssertionError(
+                         "RAW/IMG must never call qemu-img")), \
+                     patch.object(vhd, "PROGRESS_FILE", None):
+                    vhd.build("/repo", password, "latest", output)
+                self.assertEqual(output.stat().st_size, 16 * 1024 * 1024)
+                with output.open("rb") as fh:
+                    fh.seek(512)
+                    self.assertEqual(fh.read(13), b"EFI TEST DATA")
+                self.assertLess(output.stat().st_blocks * 512, output.stat().st_size // 2)
 
-    def test_vhdx_still_uses_conversion_on_request(self):
-        with tempfile.TemporaryDirectory() as d:
-            output = Path(d) / "recovered.vhdx"
-            password = Path(d) / "key"
-            password.write_text("test-secret")
-            conversions = []
-            def fake_raw(restic, snapshot, raw, root, size):
-                raw.write_bytes(b"raw")
-            def fake_convert(raw, target, fmt):
-                conversions.append((fmt, target.suffix))
-                target.write_bytes(b"vhdx")
-            commands = []
-            def fake_command(argv, **kwargs):
-                commands.append(argv)
-            with patch.object(vhd, "preflight", side_effect=vhd.output_format), \
-                 patch.object(vhd, "restore_bytes", return_value=1024), \
-                 patch.object(vhd, "make_raw", side_effect=fake_raw), \
-                 patch.object(vhd, "convert_with_progress", side_effect=fake_convert), \
-                 patch.object(vhd, "command", side_effect=fake_command), \
-                 patch.object(vhd, "PROGRESS_FILE", None):
-                vhd.build("/repo", password, "latest", output)
-            self.assertEqual(conversions, [("vhdx", ".vhdx")])
-            self.assertIn(["qemu-img", "info", "-f", "vhdx",
-                           next(c[-1] for c in commands if c[0] == "qemu-img")],
-                          commands)
-            self.assertEqual(output.read_bytes(), b"vhdx")
+    def test_converted_formats_use_matching_qemu_driver_and_staging_extension(self):
+        formats = ((".vhdx", "vhdx"), (".vhd", "vpc"),
+                   (".qcow2", "qcow2"), (".vdi", "vdi"), (".vmdk", "vmdk"))
+        for suffix, driver in formats:
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as d:
+                output = Path(d) / ("recovered" + suffix)
+                password = Path(d) / "key"
+                password.write_text("test-secret")
+                conversions = []
+                commands = []
+
+                def fake_raw(restic, snapshot, raw, root, size):
+                    raw.write_bytes(b"raw")
+
+                def fake_convert(raw, target, fmt):
+                    self.assertEqual(raw.suffix, ".raw")
+                    conversions.append((fmt, target.suffix))
+                    target.write_bytes(b"converted")
+
+                with patch.object(vhd, "preflight", side_effect=vhd.output_format), \
+                     patch.object(vhd, "restore_bytes", return_value=1024), \
+                     patch.object(vhd, "make_raw", side_effect=fake_raw), \
+                     patch.object(vhd, "convert_with_progress", side_effect=fake_convert), \
+                     patch.object(vhd, "command", side_effect=lambda argv, **kw: commands.append(argv)), \
+                     patch.object(vhd, "PROGRESS_FILE", None):
+                    vhd.build("/repo", password, "latest", output)
+
+                self.assertEqual(conversions, [(driver, suffix)])
+                info = [argv for argv in commands if argv[:2] == ["qemu-img", "info"]]
+                self.assertEqual(len(info), 1)
+                self.assertEqual(info[0][2:4], ["-f", driver])
+                self.assertEqual(Path(info[0][4]).suffix, suffix)
+                self.assertEqual(output.read_bytes(), b"converted")
 
     def test_raw_preflight_does_not_require_qemu_img(self):
         with tempfile.TemporaryDirectory() as d:
             raw = Path(d) / "disk.raw"
             vhdx = Path(d) / "disk.vhdx"
+            converted = [Path(d) / ("disk" + ext) for ext in
+                         (".vhd", ".qcow2", ".vdi", ".vmdk")]
             original_is_dir = Path.is_dir
             def is_dir(p):
                 return True if str(p) == "/usr/lib/grub/x86_64-efi" else original_is_dir(p)
@@ -106,8 +116,11 @@ class VirtualDiskTests(unittest.TestCase):
                  patch.object(vhd.shutil, "which", side_effect=which), \
                  patch.object(Path, "is_dir", is_dir):
                 self.assertEqual(vhd.preflight(raw), "raw")
-                with self.assertRaisesRegex(ValueError, "qemu-img"):
-                    vhd.preflight(vhdx)
+                self.assertEqual(vhd.preflight(Path(d) / "disk.img"), "raw")
+                for target in [vhdx] + converted:
+                    with self.subTest(format=target.suffix), self.assertRaisesRegex(
+                            ValueError, "qemu-img"):
+                        vhd.preflight(target)
 
     def test_sparse_fallback_copy_if_link_unavailable(self):
         with tempfile.TemporaryDirectory() as d:
@@ -231,6 +244,7 @@ class VirtualDiskTests(unittest.TestCase):
             progress_path = Path(d) / "progress.json"
             def fake_stream(args, callback, **kw):
                 self.assertIn("-p", args)
+                self.assertEqual(args[args.index("-O") + 1], "vhdx")
                 callback("    (18.43/100%)")
                 callback("    (73.13/100%)")
             with patch.object(vhd, "PROGRESS_FILE", progress_path), \

@@ -128,8 +128,8 @@ def start(repo, snapshot, output):
     if not REPO.fullmatch(repo) or not SNAPSHOT.fullmatch(snapshot):
         error("Choose a configured repository and full snapshot ID.")
     if not output.startswith("/") or "\n" in output or "\0" in output or \
-            not output.lower().endswith((".raw", ".img", ".vhdx", ".vhd")):
-        error("Use an absolute .raw, .img, .vhdx or .vhd output filename.")
+            not output.lower().endswith((".raw", ".img", ".vhdx", ".vhd", ".qcow2", ".vdi", ".vmdk")):
+        error("Use an absolute .raw, .img, .vhdx, .vhd, .qcow2, .vdi or .vmdk output filename.")
     if os.path.lexists(output):
         error("Output already exists. No file was overwritten.")
     if not Path(output).parent.is_dir():
@@ -209,7 +209,7 @@ def main(argv):
     elif argv == ["cancel"]:
         result = cancel()
     else:
-        error("Usage: hangar-vhd-job status|cancel|start REPO SNAPSHOT OUTPUT.raw")
+        error("Usage: hangar-vhd-job status|cancel|start REPO SNAPSHOT OUTPUT.<disk-format>")
     print(json.dumps(result, separators=(",", ":")))
 
 

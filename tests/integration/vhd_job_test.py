@@ -56,6 +56,27 @@ class VhdJobTests(unittest.TestCase):
                     job.start("full", ID, str(root / "different.vhdx"))
                 self.assertEqual(len(calls), 1)
 
+    def test_all_disk_extensions_dispatch_through_portable_runner(self):
+        for suffix in (".raw", ".img", ".vhd", ".vhdx", ".qcow2", ".vdi", ".vmdk"):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                commands = []
+                def fake_run(args, **kwargs):
+                    commands.append(args)
+                    return type("Run", (), {
+                        "returncode": 0, "stdout": "", "stderr": ""})()
+
+                with self.fixture(root), \
+                     patch.object(job, "systemd_state", return_value="active"), \
+                     patch.object(job.subprocess, "run", side_effect=fake_run):
+                    result = job.start("full", ID, str(root / ("disk" + suffix)))
+                self.assertEqual(result["state"], "running")
+                argv = commands[0]
+                self.assertEqual(argv[argv.index(str(root / "hangar-portable")) + 1],
+                                 suffix.lstrip("."))
+                self.assertEqual(argv[argv.index(str(root / "hangar-portable")) + 4],
+                                 str(root / ("disk" + suffix)))
+
     def test_persisted_completion_survives_garbage_collected_unit(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

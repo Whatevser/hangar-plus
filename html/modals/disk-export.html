@@ -23,9 +23,13 @@
                             <option value="img">.img</option>
                             <option value="vhdx">.vhdx</option>
                             <option value="vhd">.vhd</option>
+                            <option value="qcow2">.qcow2</option>
+                            <option value="vdi">.vdi</option>
+                            <option value="vmdk">.vmdk</option>
                         </select>
                     </div>
                     <div class="form-text">Full destination path on the Cockpit host. The format is appended automatically.</div>
+                    <div class="form-text" x-show="!['raw', 'img'].includes(format)">This format requires qemu-img on the host.</div>
                     <div class="small hangar-mono mt-2" x-show="valid()" x-text="outputPath()"></div>
                     <div class="text-danger small mt-2" x-show="!valid()" x-text="problem()"></div>
                     <p class="small text-warning-emphasis mt-3 mb-0">The image contains decrypted files and credentials. This operation does not test bootability.</p>

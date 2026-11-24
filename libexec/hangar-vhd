@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create an offline, UEFI-bootable VHDX/VHD/RAW from a full Linux restic snapshot.
+"""Create an offline, UEFI-bootable VHDX/VHD/RAW (plus QCOW2/VDI/VMDK) from a Linux snapshot.
 
 No VM, live-boot tooling, partition writes to host disks or host NVRAM changes.
 Only a NEW, private sparse RAW file is partitioned and mounted via a verified
@@ -28,6 +28,13 @@ KERNEL_VERSION = re.compile(r"[A-Za-z0-9._+-]+\Z")
 LOOP = re.compile(r"/dev/loop[0-9]+\Z")
 TOOLS = ("restic", "sfdisk", "losetup", "mkfs.vfat", "mkfs.ext4",
          "mount", "umount", "blkid", "grub-mkstandalone")
+# An IMG is the same sector-for-sector RAW disk. Other outputs are converted
+# from the completed RAW through qemu-img; keep this mapping explicit.
+OUTPUT_FORMATS = {
+    ".raw": "raw", ".img": "raw",
+    ".vhdx": "vhdx", ".vhd": "vpc",
+    ".qcow2": "qcow2", ".vdi": "vdi", ".vmdk": "vmdk",
+}
 
 
 class ExportCancelled(Exception):
@@ -212,10 +219,9 @@ def convert_with_progress(raw, target, fmt):
 def output_format(path):
     if not path.is_absolute() or "\0" in str(path) or "\n" in str(path):
         abort("Use an absolute disk image output path.")
-    fmt = {".raw": "raw", ".img": "raw",
-           ".vhdx": "vhdx", ".vhd": "vpc"}.get(path.suffix.lower())
+    fmt = OUTPUT_FORMATS.get(path.suffix.lower())
     if not fmt:
-        abort("Choose a .raw (recommended), .img, .vhdx or .vhd output filename.")
+        abort("Choose a .raw, .img, .vhdx, .vhd, .qcow2, .vdi or .vmdk output filename.")
     if not path.parent.is_dir():
         abort("The destination directory does not exist.")
     if os.path.lexists(path):
@@ -233,7 +239,7 @@ def preflight(output):
     for tool in tools:
         if not shutil.which(tool):
             abort("Missing '" + tool + "'. This export requires disk/EFI tools" +
-                  (" and qemu-img for VHDX/VHD conversion." if fmt != "raw" else "."))
+                  (" and qemu-img for converted disk formats." if fmt != "raw" else "."))
     if not Path("/usr/lib/grub/x86_64-efi").is_dir():
         abort("GRUB EFI modules unavailable (grub-efi-amd64-bin package).")
     return fmt
@@ -692,7 +698,7 @@ def build(repo, password_file, snapshot, output, cache_dir=None, size=None):
     logical = restore_bytes(restic, snapshot)
     size = disk_gib(logical, size)
     if fmt == "vpc" and size > 2040:
-        abort("Legacy VHD limit exceeded. Choose RAW or VHDX instead.")
+        abort("Legacy VHD limit exceeded. Choose RAW, QCOW2 or VHDX instead.")
     print(f"Snapshot: {logical / GIB:.1f} GiB logical; image capacity: {size} GiB.",
           flush=True)
     print("This exports DECRYPTED data. No VM will be installed or started.", flush=True)
@@ -702,8 +708,9 @@ def build(repo, password_file, snapshot, output, cache_dir=None, size=None):
     try:
         work = Path(tempfile.mkdtemp(prefix=".hangar-vhd-", dir=output.parent))
         raw = work / "disk.raw"
-        target = raw if fmt == "raw" else (
-            work / "disk.vhdx" if fmt == "vhdx" else work / "disk.vhd")
+        # The output extension already identifies the target driver. Do not
+        # silently give non-VHD formats a VHD staging name (or vice versa).
+        target = raw if fmt == "raw" else work / ("disk" + output.suffix.lower())
         root = work / "root"
         root.mkdir()
         try:
