@@ -29,8 +29,9 @@ If the version is **below 0.17.0**, install the current official, signature-veri
 
 ~~~sh
 sudo restic self-update --output /usr/local/bin/restic
-/usr/local/bin/restic version
+hash -r  # clear an earlier shell lookup of /usr/bin/restic
 command -v restic
+restic version
 ~~~
 
 `/usr/local/bin` normally takes precedence over `/usr/bin`; `command -v restic` should show `/usr/local/bin/restic`. The systemd services must also resolve the newer binary. An ordinary `apt upgrade` then won't overwrite the independent copy. Restic's [installation guide](https://restic.readthedocs.io/en/stable/020_installation.html) documents its verified self-updater and `--output` option. On RHEL-family systems, restic may require **EPEL**; other distributions use their own package managers.
