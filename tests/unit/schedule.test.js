@@ -1207,7 +1207,7 @@ test('the module exports every documented pure function', () => {
 // hangar shipped it for weeks: restic recorded that directory as empty, mode
 // 0000, in every snapshot, so a machine restored from one had no kernel
 // modules, could not build an initrd, and might not boot. The backups reported
-// success throughout. A recovery drill found it, and only because dracut
+// success throughout. Restoring a system exposed it because dracut
 // complained.
 //
 // Anything that hides part of the filesystem from a backup belongs nowhere near

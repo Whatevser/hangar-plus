@@ -346,8 +346,7 @@ body {
     font-size: 0.82rem;
 }
 
-/* Raw ReaR log tail — we show it verbatim when parsing fails, so it needs to be
- * readable and scrollable rather than truncated. */
+/* Long diagnostics, job logs and error details remain readable and scrollable. */
 .hangar-rawlog {
     max-height: 18rem;
     overflow: auto;

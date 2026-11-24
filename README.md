@@ -1,346 +1,126 @@
 # Hangar
 
-**Back up a Linux host from Cockpit. Browse yesterday's files, restore what matters, and recover a complete system without depending on Hangar itself.**
+A [Cockpit](https://cockpit-project.org/) interface for [restic](https://restic.net/) backups on one Linux host. Manage encrypted local/cloud repositories, systemd-scheduled jobs, retention, container volumes, snapshot browsing, restores and bootable virtual disk exports. No separate daemon or database.
 
-Hangar is a [Cockpit](https://cockpit-project.org/) interface over [restic](https://restic.net/) and systemd. It manages encrypted backup repositories, scheduled jobs, retention, container volumes, snapshot browsing, restores, and recovery exports. It does not invent a proprietary backup format or require a database.
+## Install
 
-> **Current scope:** Hangar manages the **Linux machine running Cockpit**. The bootable-disk exporter supports **x86-64 UEFI Linux systems**, not arbitrary operating systems. Exporting an image is **not a verified boot test**.
+**Requirements:** Linux with systemd, **Cockpit 300+**, administrator access, and **restic 0.17.0+**. Disk exports require **x86-64 Linux**.
 
-## Quick start
+### Ubuntu / Linux Mint / Debian
 
-Requirements: **Cockpit 300+**, Linux with **systemd**, administrator access through Cockpit, and **restic 0.17+**. Hangar can offer to install restic through its dependency setup screen.
+Install the dependencies for **all features**, including optional remote storage, FUSE browsing, virtual disk conversion and RAW repair:
+
+~~~sh
+sudo apt update
+sudo apt install -y cockpit python3 git make restic rclone fuse3 packagekit \
+  fdisk util-linux mount dosfstools e2fsprogs grub-common grub-efi-amd64-bin \
+  qemu-utils psmisc
+~~~
+
+You do **not** need every package for ordinary backups: `rclone` is for rclone-backed storage, `fuse3` enables mounted snapshot browsing (otherwise Hangar uses `restic ls`), `qemu-utils` converts VHD/VHDX/QCOW2/VDI/VMDK (not RAW/IMG), and the disk/GRUB packages are for bootable exports. `psmisc` supplies `fuser` for RAW repair. `packagekit` supports Hangar's in-app prerequisite installer. Podman/Docker are only needed for container-volume jobs.
+
+**Restic version caveat:** Some distribution repositories are older than Hangar's requirement. For example, Ubuntu 24.04 supplies restic **0.16.4**, which lacks the exit codes Hangar needs to distinguish missing and locked repositories. **Check after installing:**
+
+~~~sh
+restic version
+~~~
+
+If the version is **below 0.17.0**, install the current official, signature-verified release **alongside** the distribution package, not over the package-managed binary:
+
+~~~sh
+sudo restic self-update --output /usr/local/bin/restic
+hash -r  # clear an earlier shell lookup of /usr/bin/restic
+command -v restic
+restic version
+~~~
+
+`/usr/local/bin` normally takes precedence over `/usr/bin`; `command -v restic` should show `/usr/local/bin/restic`. The systemd services must also resolve the newer binary. An ordinary `apt upgrade` then won't overwrite the independent copy. Restic's [installation guide](https://restic.readthedocs.io/en/stable/020_installation.html) documents its verified self-updater and `--output` option. On RHEL-family systems, restic may require **EPEL**; other distributions use their own package managers.
+
+### Install Hangar
 
 ~~~sh
 git clone https://github.com/Whatevser/hangar-plus.git
 cd hangar-plus
 sudo make install
-sudo systemctl try-restart cockpit
+sudo systemctl enable --now cockpit.socket
 ~~~
 
-Open **Cockpit → Hangar** and:
+Open **Cockpit → Hangar**. Create or import a repository, add a job, then choose **Run now** for the first snapshot. For updates, use **Settings → Check GitHub → Install update**, or `git pull && sudo make install` from the checkout.
 
-1. **Repositories:** Add a destination, or **Import existing…** to reconnect a previous local restic repository.
-2. **Jobs:** Choose the files/directories or container volumes to protect, select the destination, schedule, and retention.
-3. **Jobs → Run now:** Create a first snapshot. Scheduled runs continue through systemd timers.
-4. **Logbook:** Choose a repository and a moment in time to browse, download, restore, or export it.
+## What Hangar does
 
-Hangar's UI follows Cockpit's light/dark setting. The dependency screen can provision **restic**, **rclone**, and **fuse3** where supported; specialist disk-export tooling is listed [below](#requirements-and-optional-tools).
-
-## Screens
-
-| Screen | What you can do |
+| Screen | Functions |
 | --- | --- |
-| **Overview** | See the health of jobs, recent outcomes, unreadable-file warnings, destination/authentication problems, repository sizes, and actionable fixes. |
-| **Jobs** | Create, edit, enable, disable, run, stop, and inspect scheduled backups. Configure source types, consistency, schedules, retention, and hooks. |
-| **Repositories** | Manage local/remote restic destinations, import an existing local repository, test connectivity, initialize, unlock, check integrity, monitor size, and configure size safeguards. |
-| **Logbook** | Browse snapshots on a timeline, inspect change badges, copy mounted paths, download files/ZIPs, restore selections, or produce a bootable virtual disk. |
-| **Settings** | Adjust Logbook mount behavior, failure reporting, repository-size refresh, dependency diagnostics, and GitHub-based Hangar updates. |
+| **Overview** | Backup health, recent results, repository size, warnings and repairs |
+| **Repositories** | Local, SFTP, REST, S3, B2, Azure, GCS and rclone destinations; import, test, check, unlock and size safeguards |
+| **Jobs** | Files/directories, exclusions, Podman/Docker volumes, hooks, schedules, retention and run controls |
+| **Logbook** | Snapshot timeline, change comparison, browse, download, restore and Create disk |
+| **Settings** | Mount path and permissions, Remount, failure notices, diagnostics and updates |
 
-### Screenshots
+![Logbook: snapshot timeline](screenshots/logbook.png)
 
-![Overview showing backup health and actionable problems](screenshots/overview.png)
+**Repositories:** Restic encrypts and deduplicates data before upload. Native destinations include local, SFTP, REST, S3, B2, Azure and GCS. The rclone wizard supports Google Drive, Dropbox, OneDrive, Box, pCloud, Yandex Disk, WebDAV, SFTP, FTP, SMB, S3, Backblaze B2, OpenStack Swift, Koofr and MEGA; OAuth providers may need `rclone authorize` on a browser-equipped computer.
 
-![Logbook timeline and file tree](screenshots/logbook.png)
-
-![Job configuration and recent results](screenshots/jobs.png)
-
-![Local and remote backup destinations](screenshots/repositories.png)
-
-Additional examples: [repository setup](screenshots/repository-add.png), [password generator](screenshots/password-generator.png), [folder picker](screenshots/folder-picker.png), and [Settings](screenshots/settings.png).
-
-## Repositories and destinations
-
-All repositories use **restic's encrypted, deduplicated format**. The encryption happens before data reaches a remote destination.
-
-Hangar supports these restic destination types directly:
-
-| Type | Example |
-| --- | --- |
-| **Local path** | Internal disk, mounted USB disk, NAS mount |
-| **SFTP** | SSH-accessible server |
-| **REST** | restic REST server |
-| **S3** | Amazon S3 and compatible object storage |
-| **Backblaze B2** | Native B2 API |
-| **Azure** | Azure Blob Storage |
-| **GCS** | Google Cloud Storage |
-| **rclone** | A configured rclone remote and path |
-
-### rclone destinations
-
-Use the built-in rclone wizard under **Repositories** to configure many additional services, including Google Drive, OneDrive, Dropbox, Box, pCloud, Mega, Koofr, OpenStack Swift, WebDAV, SMB, FTP, and others. You can also select an existing rclone remote.
-
-Authentication depends on the provider:
-
-- **Username/key credentials:** Supply fields in Hangar's form where the provider supports them.
-- **Browser/OAuth sign-in:** For headless servers, Hangar displays an `rclone authorize` command to run on a computer with a browser. Paste the resulting token into Hangar.
-- **Manual configuration:** Some providers, notably **Jottacloud**, require interactive `rclone config` outside the wizard; Hangar can then use the configured remote.
-
-| Setup method | Provider | Requirement |
+| Setup | Provider | How |
 | --- | --- | --- |
-| **Manual** | Jottacloud | Hangar cannot configure the remote directly; use interactive `rclone config` first. |
+| **Manual** | Jottacloud | Use interactive `rclone config` first, then select the remote in Hangar |
 
-Google Drive's shared rclone client ID may be heavily rate-limited; a personal client ID is recommended for sustained use. Business OneDrive tenants can require their own app registration. Providers may expire tokens or impose quotas; Hangar attempts to identify expired authorization and offers a reconnection action.
+**Import existing…** reconnects a local restic repository using its original password; **never initialize an existing repository** just to reconnect it.
 
-Using a native restic destination when one is available avoids an extra rclone process. A second rclone `crypt` layer normally isn't necessary: restic already encrypts its repository.
+**Jobs:** Hourly, daily, weekly and custom systemd timers survive Cockpit disconnections; missed runs can be caught up. Retention presets and custom policies operate on snapshots, with repository size limits and protected snapshots. Container sources can be copied live, paused or stopped; active databases may need consistent dumps instead. Backup results distinguish unreadable files (partial snapshot) from outright failures.
 
-### Recover an existing repository
+**Logbook:** Uses a read-only restic FUSE mount where available, otherwise `restic ls`. Restore defaults to a separate directory; recent destinations and the "without original parent folders" preference are remembered in the browser. Settings → **Remount** applies a changed snapshot mount path to the selected repository immediately. Allowing local users to browse mounts may expose recovered files.
 
-**Repositories → Import existing…** adds an existing **local** restic repository *without reinitializing or copying it*. Point Hangar at the directory containing restic's `config` file and provide the **original password**. Hangar verifies that it can list snapshots before registering the repository; on failure it does not leave a new usable repository entry behind.
+## Bootable virtual disks
 
-**Do not initialize an existing repository** to recover it. Import it instead.
+**Logbook → Create disk** asks for an absolute filename **without** its extension, then offers:
 
-### Repository size safeguards
-
-Repositories can have a **size limit** and a **minimum snapshot floor**. After a backup, Hangar can inspect the repository's actual stored size and prune older snapshots iteratively when the configured guard allows it. Deduplication makes the reclaimed space unpredictable, so this is not an exact-size promise. Guard settings show the trade-offs rather than silently deleting history.
-
-If **any local Hangar job targeting a repository has retention disabled**, the backup runner protects that repository against both its normal policy pruning and size-limit pruning. This is intentionally conservative.
-
-Repository-size measurements can be slow for remote storage. Overview remembers the previous measurement and its timestamp; **Settings** controls when it should be refreshed, with an option to measure only on demand.
-
-## Jobs, schedules, and consistency
-
-A job selects a repository and one or more sources. Sources include:
-
-- **Files and directories:** Paths on the Cockpit host, exclusions, exclusion files, one-filesystem behavior, and snapshot tags.
-- **Container volumes:** Named **Podman** or **Docker** volumes. Hangar asks the runtime for their mountpoints, including rootless-user configurations where specified.
-
-For container data, choose a consistency strategy:
-
-| Mode | Behavior | Important caveat |
+| Format | Output | Dependency |
 | --- | --- | --- |
-| **Live copy** | Back up mounted files while containers run | Unsafe for databases receiving writes |
-| **Pause** | Pause selected containers during copying | In-memory buffered writes may not reach disk |
-| **Stop** | Stop containers, copy files, then restart | Consistent file-level snapshot, but causes downtime |
-| **Dump command** | Execute a supplied database dump command and back up its output | You must write the dump into a volume that the job backs up |
+| **RAW / IMG** | Sparse, directly usable disk; RAW is the default | Disk and GRUB tools |
+| **VHD / VHDX** | Legacy VHD / Hyper-V disk | `qemu-img` |
+| **QCOW2** | QEMU/KVM disk | `qemu-img` |
+| **VDI** | VirtualBox disk | `qemu-img` |
+| **VMDK** | VMware disk | `qemu-img` |
 
-Hangar warns about likely live-database risks. Container pause/stop cleanup belongs to the systemd-owned backup runner, not the browser session.
+All formats start from **the same RAW disk builder**: create GPT, a 512 MiB FAT32 EFI partition and an ext4 root partition, restore the full restic snapshot, then embed its boot locator in standalone UEFI GRUB. RAW/IMG are published directly; other formats are converted with `qemu-img`. Exports run as independent systemd jobs with progress, cancellation and reconnectable status. Existing output files are not overwritten.
 
-Jobs can use **hourly, daily, weekly, or custom systemd calendar schedules**. The generated timer uses `Persistent=true`, so missed runs can be picked up after the machine returns online. **Run now** starts the corresponding systemd unit; closing Cockpit doesn't stop the backup. The Jobs screen reads running state and journal progress again when reopened.
+**Limits:** Requires a complete **x86-64 UEFI Linux** snapshot with kernel, initramfs and modules. This is **not a clone of the original partition layout**: encrypted roots, LUKS/LVM, Btrfs/ZFS, separate boot layouts and legacy BIOS are not reconstructed. The EFI loader is unsigned: **disable Secure Boot** in the guest. Hangar does **not** launch a VM or verify that the image boots. VM disk permissions and guest drivers may still need attention.
 
-### Retention
+### Repair an older RAW/IMG disk stuck at `grub>`
 
-The default is **Rolling**: **24 hourly, 30 daily, 52 weekly, 12 monthly** snapshots. Retention is grouped by **host and backed-up paths**, so unrelated systems and source trees are not thinned together.
-
-Available presets include **Minimal**, **Rolling**, **Paranoid**, **Space saver**, **Last 30 days**, **Last 90 days**, **Last year**, and **Recent then thin**. A **Custom** policy supports counts, time windows, and protected tags.
-
-Choose **Disable** to keep snapshots until you delete them manually. Retention is about *which snapshots remain*, not a guarantee that backups will use a fixed amount of disk space.
-
-### Results and remediation
-
-Hangar distinguishes a completed snapshot with unreadable files (**partial**) from a failed backup. restic exit code **3** means some source files could not be read but the snapshot may still have been written; Hangar lists the unreadable paths instead of treating the entire run as a total failure. Repository-not-found, lock, wrong-password, and expired-authorization errors have contextual recovery actions where possible.
-
-Backup progress comes from restic's JSON messages, not a guessed timer. Job outcomes and operational logs are available through systemd/journald.
-
-## Logbook: browse, download, restore
-
-Choose a repository, then a snapshot on the timeline. The Logbook can use a **read-only restic FUSE mount** to expose that moment as a directory tree on the Cockpit host. File change badges compare adjacent snapshots. If a usable mount is unavailable, Hangar can fall back to browsing with `restic ls`.
-
-- **Open a directory** to browse that snapshot's tree; **Copy path** copies the corresponding mounted host path when one exists.
-- **Download** a selected file or a selected folder as a ZIP archive in your browser.
-- **Restore…** selected files/folders to an **alternate location** by default. The destination field has a recent-path dropdown (with per-path removal); the last successfully used destination and **Restore without original parent folders** setting are remembered in this browser. Restoring to original paths is a separate, potentially destructive choice.
-- **Create disk…** builds a virtual boot disk from a **complete Linux-system snapshot**; see the next section.
-
-The mount location, idle-unmount interval, and **Allow local access** setting live in **Settings**. The **Remount** button beside the mount folder saves pending changes and restarts the current Logbook repository's snapshot mount immediately. Allow local access exposes mounts to local Linux users subject to saved Unix permissions; consider the confidentiality implications before enabling it.
-
-**Connection behavior matters:** Logbook browsing, a manual restore, repository checking, and pruning are **not all independent of the Cockpit connection**. Avoid closing the tab during those manual operations. Normal background backups and bootable-disk exports use independent systemd jobs.
-
-## Bootable virtual disks: RAW by default
-
-**Logbook → Create disk…** produces a **decrypted virtual disk** from a selected **full Linux root snapshot**. Enter the absolute filename **without an extension** and select the disk format from the dropdown (.raw is preselected). Hangar appends the selected extension automatically. It **does not create or boot a VM**.
-
-| Extension | Format | Recommended use |
-| --- | --- | --- |
-| **`.raw`** (default) or `.img` | Sparse RAW disk | **Cockpit Virtual Machines, libvirt, QEMU/KVM on Linux** |
-| `.vhdx` | VHDX | Systems needing the VHDX format, such as Hyper-V |
-| `.vhd` | Legacy VHD | Legacy consumers; subject to a smaller disk-size limit |
-| `.qcow2` | QCOW2 | QEMU/KVM virtual disks |
-| `.vdi` | VDI | VirtualBox virtual disks |
-| `.vmdk` | VMDK | VMware virtual disks |
-
-### What Hangar actually builds
-
-1. Allocate a **private, sparse RAW disk** sized from restic's logical restore size plus headroom (minimum 16 GiB).
-2. Partition it as **GPT** with a **512 MiB FAT32 EFI System Partition** and an **ext4 root partition**.
-3. Attach it using a verified loop device, format the partitions, and run **restic restore directly into ext4**, preserving supported metadata.
-4. Check the restored system for a matching **kernel, initramfs, and modules**; recreate missing empty **`/dev`, `/proc`, `/sys`, `/run`, `/tmp`, `/var/tmp`** mountpoints inside the image (without overwriting existing directories); configure **the image's** root UUID/fstab and GRUB menu; use **`grub-mkstandalone`** to generate a removable UEFI bootloader with the image's root-UUID locator **embedded into the EFI executable**. Sidecar EFI/vendor GRUB configs are also written, but boot does not depend on the host's GRUB prefix or on finding those sidecar files.
-5. Unmount and detach. For **RAW/IMG**, publish that same sparse disk directly. For **VHDX/VHD/QCOW2/VDI/VMDK**, run `qemu-img convert` to create the requested output.
-
-**RAW/IMG avoid the extra conversion and extra populated image copy.** A RAW disk's *virtual capacity* can be much larger than its actual allocated blocks: compare `ls -lh` (logical size) with `du -h` (space used). Use sparse-aware copy tools when moving it.
-
-### Progress, cancellation, and reconnection
-
-Exports run as **independent transient systemd services**, coordinated by `hangar-vhd-job`. Logbook shows live **restic restore percentage/bytes**, preparation/bootloader stages, and **conversion percentage** when converting to VHD/VHDX/QCOW2/VDI/VMDK. It records errors and final status in private files under `/var/lib/hangar/vhd/`.
-
-While active, **Create disk…** changes to **Abort disk**. Cancellation requests stop the worker, terminate the current child command, and attempt to unmount/detach temporary devices safely. A Cockpit WebSocket disconnect or browser close **does not terminate the export**; open Logbook again to recover the saved status. Only **one disk export per host** runs at once.
-
-Output files are not silently overwritten. The disk contains plaintext data and credentials from the restored system; protect it like a copy of the source machine.
-
-### Repair an existing RAW image that stops at `grub>`
-
-If an older export boots to the bare GNU GRUB command prompt rather than
-showing its menu, **shut down the VM completely and disable Secure Boot**
-before running this in-place repair. It does not restore the snapshot again:
+With the VM **fully powered off** (and Secure Boot disabled):
 
 ~~~sh
-sudo python3 /usr/share/cockpit/hangar/libexec/hangar-vhd --repair-raw /absolute/path/hangar-snapshot.raw
+sudo python3 /usr/share/cockpit/hangar/libexec/hangar-vhd \
+  --repair-raw /absolute/path/image.raw
 ~~~
 
-Repair validates Hangar's EFI/root partition labels, checks that the RAW image
-isn't in use, verifies its root UUID, reconstructs essential mountpoint
-directories, and builds the same embedded-config GRUB as a fresh export.
-The previous EFI loader is preserved as
-`EFI/BOOT/BOOTX64.EFI.before-hangar-repair` before replacement. A failed GRUB
-build will not overwrite the existing EFI executable. The repair requires
-`fuser` (psmisc), `grub-mkstandalone`, and normal loop/mount tools.
-The host's bootloader and UEFI NVRAM remain untouched. **Repair does not
-modify the guest's kernel or initramfs**; a separate kernel panic after the
-menu loads is a different issue.
+Repair checks the image's EFI/root partitions, avoids in-use disks, and rebuilds the embedded GRUB config without re-restoring the snapshot. It keeps a backup of the previous EFI loader. It does **not** repair a missing kernel/initramfs or support VHD/VHDX conversion in place.
 
+## Offline recovery: Access kit
 
-### What these images can—and cannot—boot
-
-The exporter targets **x86-64 UEFI, systemd-based Linux installations with an unencrypted ext4 root** and a complete snapshot including `/etc`, `/boot`, kernel modules, and initramfs.
-
-It **does not** recreate encrypted-root/LUKS, Btrfs/ZFS/LVM layouts, independent `/boot` partitions, or a BIOS/legacy bootloader. The standalone GRUB EFI loader is **unsigned**, so **Secure Boot must be disabled** in the guest firmware. Signed distribution GRUB binaries were previously used, but could still enter a bare `grub>` prompt due to their external configuration prefix.
-
-For **Cockpit Virtual Machines**, use **UEFI/OVMF firmware with Secure Boot disabled** and attach a `.raw` disk with the QEMU/libvirt **raw** driver. Make sure the VM's QEMU process can access the file *and every parent directory*. Firmware, virtual disk controller, and initramfs driver differences may still prevent boot.
-
-**An export reporting “completed” means files, partitions and the EFI bootloader were assembled—not that the machine booted successfully.** No automatic VM boot test is performed.
-
-## Recover without Hangar: Access kit
-
-For a **local** repository, **Repositories → Access kit** can place these files beside the restic repository:
-
-| File | Purpose |
-| --- | --- |
-| `hangar-access.key` | Copy of the repository password |
-| `hangar-access.sh` | Standalone restic and bootable disk recovery commands |
-| `hangar-vhd.py` | Standalone bootable disk builder (RAW/IMG, VHD/VHDX, QCOW2, VDI and VMDK) |
-
-Re-running **Access kit** can update recognized older generated scripts. It refuses to overwrite an unknown customized script, a symlinked builder, or a mismatched key.
-
-After connecting that drive to another Linux host:
+For a **local** repository, **Repositories → Access kit** places three files beside the backup: `hangar-access.sh` (independent launcher), `hangar-access.key` (repository password) and `hangar-vhd.py` (full disk builder). On another compatible Linux host, install the required tools, then:
 
 ~~~sh
 cd /path/to/restic-repository
 sudo ./hangar-access.sh snapshots
 sudo ./hangar-access.sh restore latest --target /path/to/recovery
 sudo ./hangar-access.sh raw latest /absolute/path/system.raw
-# Alternatives: img, vhdx, vhd, qcow2, vdi, vmdk
+# Also: img, vhd, vhdx, qcow2, vdi, vmdk
 ~~~
 
-The script uses standard restic commands for listing/restoring; bootable disk exports require GRUB and filesystem utilities, plus `qemu-img` for VHD/VHDX/QCOW2/VDI/VMDK.
+No Hangar or Cockpit installation is needed on the recovery host. **Re-run Access kit** after updating Hangar to refresh older generated scripts and the builder; customized scripts and mismatched keys are never silently replaced.
 
-**Critical security trade-off:** This is opt-in. Keeping `hangar-access.key` **next to the encrypted repository** means someone who copies the drive can decrypt the backups. Keep independent, protected copies of repository credentials if you choose *not* to use the access kit.
+**Security warning:** Access-kit keys, downloaded/restored files and disk images contain sensitive plaintext. Keeping `hangar-access.key` alongside its encrypted repository means someone with the drive can decrypt that backup.
 
-## Settings, updates, and troubleshooting
+## Maintenance
 
-Settings includes:
+- **Settings** can update from GitHub `main` and optionally enable twice-daily automatic update checks. Configuration under `/etc/hangar` remains in place.
+- Jobs are systemd units; logs are available in journald: `journalctl -u 'hangar-backup@JOB_ID.service' -n 100 --no-pager`.
+- Disk export status: `sudo python3 /usr/libexec/hangar/hangar-vhd-job status`.
+- `sudo make uninstall` removes the plugin/helpers, **not repositories or `/etc/hangar`**. Disable old Hangar timers first; without the removed runner, their jobs will fail.
+- Hangar manages **one Cockpit host**, not a cluster. Some manual browser operations can be interrupted by disconnects; systemd backups and disk exports continue.
+- Source tests: `npm install`, `make test` (JavaScript), `npm run test:smoke`, `python3 tests/integration/vhd_test.py`. Real disk/boot behavior requires host-side testing.
 
-- Snapshot mount directory (default `/run/hangar/mnt`), idle unmount, and local-access permissions.
-- Repository-size measurement age, including on-demand-only refresh.
-- Failed-backup reporting and dependency diagnostics with a copyable bug-report summary.
-- **Check GitHub**, **Install update**, and optional **Automatic updates**.
-
-**Self-update** follows [`Whatevser/hangar-plus` `main`](https://github.com/Whatevser/hangar-plus). The updater installs newer Cockpit files and privileged helper executables, and detects missing helpers even when the recorded commit is already current. It preserves `/etc/hangar`, repository definitions and passwords. Reload Cockpit after a manual update.
-
-Automatic updates use `hangar-auto-update.timer` **twice daily**; they are **off by default** until explicitly enabled.
-
-Useful diagnostics on the Linux host:
-
-~~~sh
-# Scheduled job and recent log (replace JOB_ID):
-systemctl status 'hangar-backup@JOB_ID.service'
-journalctl -u 'hangar-backup@JOB_ID.service' -n 100 --no-pager
-
-# Active/durable disk exports:
-sudo python3 /usr/libexec/hangar/hangar-vhd-job status
-
-# Confirm a RAW image is really RAW:
-file /absolute/path/system.raw
-~~~
-
-If an export or mount fails, inspect the actionable message and the service journal. FUSE availability, missing GRUB utilities, file permissions, and insufficient temporary storage are distinct problems; don't treat every boot failure as a corrupt restic snapshot.
-
-### Files and system services
-
-Hangar has **no dedicated always-running application daemon or database**. Existing Linux services and files are its source of truth:
-
-| Location | Contents |
-| --- | --- |
-| `/etc/hangar/config.json` | Global settings |
-| `/etc/hangar/repos/<id>.json` | Repository definitions (not passwords) |
-| `/etc/hangar/repos/<id>.key` | Root-protected repository passwords |
-| `/etc/hangar/jobs/<id>.json` | Job definitions |
-| `/etc/systemd/system/hangar-backup@*.{service,timer}` | Scheduled job units |
-| `/var/lib/hangar/state/` | Persisted backup-run summaries |
-| `/var/lib/hangar/vhd/` | Background bootable disk export state |
-| `/run/hangar/mnt/` | Default transient snapshot mounts |
-| `/usr/libexec/hangar/` | Privileged runner, updater, portable exporter, and disk-builder helpers |
-| journald | Service logs and historical details (subject to journal retention) |
-
-You can work with restic repositories independently of Hangar.
-
-### Updating and uninstalling from a checkout
-
-~~~sh
-# Reinstall/update from a checked-out source tree:
-git pull
-sudo make install
-sudo systemctl try-restart cockpit
-
-# Uninstall Cockpit plugin, helpers, and cache:
-sudo make uninstall
-~~~
-
-**Uninstall behavior:** The Makefile deliberately preserves `/etc/hangar`, including repository passwords and job configuration, but **removes `/usr/libexec/hangar`**. Existing systemd backup timer/unit definitions may remain, but their backup runs **will fail without the removed `hangar-run` executable**. Disable/remove managed timers or keep the runner installed if you intend to continue running backups without the UI. Uninstalling does **not** delete restic repositories.
-
-## Requirements and optional tools
-
-| Component | Required for | Provisioning |
-| --- | --- | --- |
-| **Cockpit 300+**, Linux, systemd, administrator permissions | Hangar itself | Install on the host |
-| **restic 0.17+** | Backup, browse, restore, repository management | Hangar dependency setup can install it |
-| **rclone** | rclone-backed destinations | Hangar dependency setup can install it |
-| **fuse3** | Snapshot FUSE browsing | Hangar dependency setup can install it; `restic ls` is a fallback |
-| **sfdisk, losetup, mount, umount, blkid, mkfs.vfat, mkfs.ext4** | Bootable disk creation | Host disk/FS tools; check before exporting |
-| **grub-mkstandalone** plus x86-64 EFI modules | Bootable UEFI disks | Install the host's GRUB EFI tooling (e.g., grub-common and grub-efi-amd64-bin on Ubuntu/Mint); guest Secure Boot must be off |
-| **qemu-img** (`qemu-utils`) | VHD/VHDX/QCOW2/VDI/VMDK conversion | **Not needed for RAW/IMG export** |
-| **Podman or Docker** | Corresponding container-volume jobs | Runtime must already manage those volumes |
-
-On RHEL-family distributions, restic may require EPEL; Hangar can offer a static-binary fallback where appropriate. PackageKit and available package sources vary by distro; Hangar cannot guarantee every optional recovery utility will be installed automatically.
-
-## Security and limitations
-
-- **Encryption:** restic encrypts repositories. Root can read the password key files in `/etc/hangar/repos/`; protect the host and backups accordingly.
-- **Systemd credentials:** Backup jobs provide repository passwords using `LoadCredential=` rather than exposing passwords in process arguments.
-- **Decrypted exports:** Downloaded files, virtual disk images, and access kits can reveal private contents. They are **not encrypted restic repositories**.
-- **Container consistency:** Pausing a database process is not equivalent to obtaining an application-consistent backup. Use clean shutdown or verified dumps.
-- **No cluster dashboard:** Hangar manages one Cockpit host; restic snapshots record their host/path identity and multiple hosts can use supported shared repositories, but Hangar is not a multi-host orchestration system.
-- **Not every manual operation is detached:** Browser-connected tasks may be interrupted by a lost Cockpit session. Systemd backup jobs and bootable disk exports are the explicit durable exceptions.
-- **No boot guarantee:** A bootable disk export is best-effort reconstruction of a supported Linux layout, not cloning every partition, service, hardware driver, or firmware configuration.
-- **History is finite:** journald rotation can remove older run logs; persistently tracked summaries and the restic repository are separate from journal history.
-
-## Development and testing
-
-~~~sh
-npm run test:unit           # JS unit tests, no coverage instrumentation
-make test                   # JS unit tests with coverage floors
-make coverage               # Coverage report and coverage/lcov.info
-npm run test:integration    # Node integration tests (real restic where available)
-npm run test:smoke          # Structural invariants
-npm install
-npm run test:e2e            # Playwright + stubbed Cockpit bridge
-npm run test:ui             # Playwright against a real Cockpit session
-python3 tests/integration/vhd_test.py
-python3 tests/integration/vhd_job_test.py
-python3 tests/integration/updater_helper_repair.py
-~~~
-
-Other Linux integration scripts include `tests/integration/portable-live.sh` for real restic/standalone access-kit behavior. Some integration scenarios need installed tools, root permissions, or supported container runtimes and are not interchangeable with browser stubs.
-
-**Coverage caveat:** Node coverage measures the JavaScript source, **not** the privileged Python runner, native restic, Linux mount operations, or whether a generated image boots. Browser tests with a stubbed Cockpit bridge do not prove live-host integration. For `test:ui`, provide `COCKPIT_URL`, `COCKPIT_USER`, and `COCKPIT_PASS`, or a protected JSON file via `COCKPIT_CREDENTIALS_FILE` outside this repository.
-
-## License
-
-See [LICENSE](LICENSE).
+[Changelog](CHANGELOG.md) · [More screenshots](screenshots/) · [License](LICENSE)

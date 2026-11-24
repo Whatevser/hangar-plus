@@ -1,8 +1,8 @@
 // core/fspicker.js — the shared filesystem browser behind every path field.
 //
 // hangar asks for a lot of absolute paths: where a local repository lives, what a
-// job backs up, what it excludes, where a restore lands, where a rescue image is
-// written, where snapshots are mounted. Typing those by hand is where typos become
+// job backs up, what it excludes, where a restore lands, where a virtual disk is
+// exported, where snapshots are mounted. Typing those by hand is where typos become
 // "backed up the wrong directory for three weeks", so every one of them gets a
 // Browse button and they all come here.
 //

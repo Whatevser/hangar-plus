@@ -148,10 +148,10 @@ function stubProvision(missingTools) {
 
 test('refreshMissing asks the system and pairs each tool with its reason', async () => {
     const a = App.hangarApp();
-    globalThis.HangarProvision = stubProvision(['rclone', 'rear']);
+    globalThis.HangarProvision = stubProvision(['rclone', 'fuse3']);
     try {
         await a.refreshMissing();
-        assert.deepEqual(a.missing.map((m) => m.tool), ['rclone', 'rear']);
+        assert.deepEqual(a.missing.map((m) => m.tool), ['rclone', 'fuse3']);
         assert.match(a.missing[0].reason, /needed/);
     } finally { delete globalThis.HangarProvision; }
 });
@@ -172,7 +172,7 @@ test('installing the missing tools clears the banner rather than leaving it stal
     // header chip and the prerequisite banner kept saying "2 tools missing",
     // which reads as though the install had failed.
     const a = App.hangarApp();
-    globalThis.HangarProvision = stubProvision(['rclone', 'rear']);
+    globalThis.HangarProvision = stubProvision(['rclone', 'fuse3']);
     try {
         await a.refreshMissing();
         assert.equal(a.missing.length, 2);

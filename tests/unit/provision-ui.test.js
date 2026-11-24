@@ -116,7 +116,7 @@ test('a plain packagekit step would not download', () => {
 });
 
 test('an unavailable step would not download', () => {
-    assert.equal(UI.wouldDownload({ tool: 'rear', method: 'unavailable' }), false);
+    assert.equal(UI.wouldDownload({ tool: 'fuse3', method: 'unavailable' }), false);
 });
 
 test('wouldDownload rejects junk instead of guessing', () => {

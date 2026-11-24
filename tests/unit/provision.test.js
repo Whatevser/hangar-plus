@@ -46,10 +46,6 @@ test('parseVersion ignores the 3 in fusermount3', () => {
     assert.deepEqual(P.parseVersion('fusermount3 version: 3.16.2'), { major: 3, minor: 16, patch: 2 });
 });
 
-test('parseVersion reads ReaR\'s banner', () => {
-    assert.deepEqual(P.parseVersion('Relax-and-Recover 2.7 / 2020-06-17'), { major: 2, minor: 7, patch: 0 });
-});
-
 test('parseVersion accepts a bare two-component version', () => {
     assert.deepEqual(P.parseVersion('2.6'), { major: 2, minor: 6, patch: 0 });
 });
@@ -87,7 +83,7 @@ test('parseVersion handles a leading v with no separator', () => {
 // ---------------------------------------------------------------- formatVersion
 
 test('formatVersion pads missing components', () => {
-    assert.equal(P.formatVersion('rear 2.7'), '2.7.0');
+    assert.equal(P.formatVersion('restic 0.17'), '0.17.0');
     assert.equal(P.formatVersion({ major: 1, minor: 2, patch: 3 }), '1.2.3');
 });
 
@@ -317,7 +313,7 @@ test('packagesFor returns a copy, so callers cannot mutate the table', () => {
     assert.deepEqual(P.packagesFor('restic', 'debian'), ['restic']);
 });
 
-test('packagesFor returns an empty list for rear on arch and for unknown families', () => {
+test('packagesFor returns an empty list for unknown distribution families', () => {
     assert.deepEqual(P.packagesFor('restic', 'unknown'), []);
 });
 
@@ -362,7 +358,7 @@ test('planFor falls back to the static binary when the family is unknown', () =>
     assert.deepEqual(plan.map((s) => s.method), ['binary', 'binary']);
 });
 
-test('planFor reports fuse3 and rear as unavailable when nothing can install them', () => {
+test('planFor reports fuse3 unavailable when no installation method exists', () => {
     assert.equal(P.planFor(['fuse3'], 'unknown')[0].method, 'unavailable');
 });
 
@@ -451,7 +447,7 @@ test('binaryFallbackFor defaults to the verified version when none is given', ()
 });
 
 test('binaryFallbackFor refuses tools with no official static release', () => {
-    assertGeneric(() => P.binaryFallbackFor('rear', '2.7', 'x86_64'));
+    assertGeneric(() => P.binaryFallbackFor('borg', '1.2', 'x86_64'));
     assertGeneric(() => P.binaryFallbackFor('fuse3', '3.16.2', 'x86_64'));
     assertGeneric(() => P.binaryFallbackFor('', '1.0.0', 'x86_64'));
 });
