@@ -771,6 +771,51 @@ test('an invalid plan cannot be submitted', async () => {
     assert.equal(called, false);
 });
 
+test('restore preferences remember the last path and flatten option with bounded deduplication', async () => {
+    const data = new Map();
+    const storage = {
+        getItem: (key) => data.get(key) || null,
+        setItem: (key, value) => data.set(key, value)
+    };
+    await withPatched(globalThis, {
+        localStorage: storage,
+        addEventListener: () => {}
+    }, async () => {
+        UI.writeRestorePrefs({
+            paths: ['/srv/first', '/srv/first', 'relative', '/', '/srv/second'],
+            dropParent: true
+        });
+        assert.deepEqual(UI.readRestorePrefs(), {
+            paths: ['/srv/first', '/srv/second'], dropParent: true
+        });
+        const d = UI.hangarRestore();
+        d.selection = SEL;
+        d.snapshot = 'abc';
+        d.target = '/srv/latest';
+        d.dropParent = true;
+        let accepted = false;
+        d._resolve = (plan) => { accepted = !!plan; };
+        await d.submit();
+        assert.equal(accepted, true);
+        assert.deepEqual(UI.readRestorePrefs(), {
+            paths: ['/srv/latest', '/srv/first', '/srv/second'], dropParent: true
+        });
+        const handlers = {};
+        globalThis.addEventListener = (name, callback) => { handlers[name] = callback; };
+        const next = UI.hangarRestore();
+        next.init();
+        handlers['hangar:restore']({ detail: { selection: SEL, snapshot: 'abc' } });
+        assert.equal(next.target, '/srv/latest');
+        assert.equal(next.dropParent, true);
+        next.forgetRecent('/srv/latest');
+        assert.deepEqual(UI.readRestorePrefs().paths, ['/srv/first', '/srv/second']);
+        assert.equal(next.target, '/srv/latest', 'removing history does not overwrite typed destination');
+        next.pickRecent('/srv/second');
+        assert.equal(next.target, '/srv/second');
+        assert.equal(next.historyOpen, false);
+    });
+});
+
 // --- the screen markup ----------------------------------------------------
 
 test('the template uses the stylesheet classes the screen was designed around', () => {
@@ -2039,17 +2084,19 @@ test('restore verifies contents and treats a picked filename as literal', async 
 
 
 // --- durable bootable disk job -----------------------------------------------------
-test('RAW disk is default and runs through durable systemd job control', async () => {
+test('disk export takes the extension from the dropdown and starts the durable job', async () => {
     const c = attached();
     c.moment = { id: 'a'.repeat(64) };
     const calls = [];
-    globalThis.confirm = () => true;
-    globalThis.prompt = (message, suggested) => {
-        assert.match(message, /\.raw recommended/);
-        assert.match(suggested, /\.raw$/);
-        return suggested;
-    };
-    try {
+    await withPatched(globalThis, {
+        document: { getElementById: (id) => id === UI.DISK_MODAL_ID ? {} : null },
+        CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
+        dispatchEvent: (event) => {
+            assert.equal(event.type, 'hangar:disk-export');
+            event.detail.resolve({ path: '/var/tmp/recovered.vhdx', format: 'vhdx' });
+        },
+        confirm: () => true
+    }, async () => {
         await withCockpit((argv) => {
             calls.push(argv);
             if (argv[2] === 'start') return Promise.resolve(JSON.stringify({
@@ -2060,18 +2107,34 @@ test('RAW disk is default and runs through durable systemd job control', async (
             await c.createVhdx();
             assert.equal(c.vhdIsRunning(), true);
             assert.equal(c.vhdPercent(), 42);
-            assert.equal(c.busy, false, 'long-lived export must not occupy Logbook busy depth');
+            assert.equal(c.busy, false, 'export must not occupy Logbook busy depth');
             await c.abortVhdx();
         });
-    } finally {
-        delete globalThis.confirm;
-        delete globalThis.prompt;
-    }
+    });
     assert.deepEqual(calls[0].slice(0, 2), ['/usr/bin/python3',
         '/usr/share/cockpit/hangar/libexec/hangar-vhd-job']);
     assert.deepEqual(calls[0].slice(2, 5), ['start', 'nas', 'a'.repeat(64)]);
-    assert.match(calls[0][5], /\.raw$/);
+    assert.equal(calls[0][5], '/var/tmp/recovered.vhdx');
     assert.deepEqual(calls[1].slice(2), ['cancel']);
+});
+
+test('disk picker refuses a typed extension and accepts each format', () => {
+    for (const format of ['raw', 'img', 'vhdx', 'vhd'])
+        assert.equal(UI.diskExportPath('/var/tmp/recovery', format), '/var/tmp/recovery.' + format);
+    for (const name of ['/tmp/image.raw', 'relative', '/', '/tmp/name/'])
+        assert.equal(UI.diskExportPath(name, 'raw'), '');
+    assert.equal(UI.diskExportPath('/tmp/name', 'iso'), '');
+    const d = UI.hangarDiskExport();
+    d.baseName = '/tmp/copy.vhd';
+    d.format = 'raw';
+    assert.equal(d.valid(), false);
+    assert.match(d.problem(), /without an extension/);
+    d.baseName = '/tmp/copy';
+    d.format = 'vhd';
+    let selected = null;
+    d._resolve = (value) => { selected = value; };
+    d.submit();
+    assert.deepEqual(selected, { path: '/tmp/copy.vhd', format: 'vhd' });
 });
 
 test('VHDX state survives a new Logbook instance and displays a failure promptly', async () => {
