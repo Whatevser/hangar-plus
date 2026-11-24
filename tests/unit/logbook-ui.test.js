@@ -2175,9 +2175,9 @@ test('closing disk export with Escape/backdrop resolves cancellation', async () 
 });
 
 test('disk picker refuses a typed extension and accepts each format', () => {
-    for (const format of ['raw', 'img', 'vhdx', 'vhd'])
+    for (const format of ['raw', 'img', 'vhdx', 'vhd', 'qcow2', 'vdi', 'vmdk'])
         assert.equal(UI.diskExportPath('/var/tmp/recovery', format), '/var/tmp/recovery.' + format);
-    for (const name of ['/tmp/image.raw', 'relative', '/', '/tmp/name/'])
+    for (const name of ['/tmp/image.raw', '/tmp/image.qcow2', '/tmp/image.vmdk', 'relative', '/', '/tmp/name/'])
         assert.equal(UI.diskExportPath(name, 'raw'), '');
     assert.equal(UI.diskExportPath('/tmp/name', 'iso'), '');
     const d = UI.hangarDiskExport();
