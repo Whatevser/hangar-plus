@@ -59,7 +59,13 @@ Open **Cockpit → Hangar**. Create or import a repository, add a job, then choo
 
 ![Logbook: snapshot timeline](screenshots/logbook.png)
 
-**Repositories:** Restic encrypts and deduplicates data before upload. Hangar supports rclone remotes such as Google Drive, OneDrive, Dropbox, WebDAV, SMB and FTP. Some providers require an OAuth token or an existing `rclone config`. **Import existing…** reconnects a local restic repository using its original password; **never initialize an existing repository** just to reconnect it.
+**Repositories:** Restic encrypts and deduplicates data before upload. Native destinations include local, SFTP, REST, S3, B2, Azure and GCS. The rclone wizard supports Google Drive, Dropbox, OneDrive, Box, pCloud, Yandex Disk, WebDAV, SFTP, FTP, SMB, S3, Backblaze B2, OpenStack Swift, Koofr and MEGA; OAuth providers may need `rclone authorize` on a browser-equipped computer.
+
+| Setup | Provider | How |
+| --- | --- | --- |
+| **Manual** | Jottacloud | Use interactive `rclone config` first, then select the remote in Hangar |
+
+**Import existing…** reconnects a local restic repository using its original password; **never initialize an existing repository** just to reconnect it.
 
 **Jobs:** Hourly, daily, weekly and custom systemd timers survive Cockpit disconnections; missed runs can be caught up. Retention presets and custom policies operate on snapshots, with repository size limits and protected snapshots. Container sources can be copied live, paused or stopped; active databases may need consistent dumps instead. Backup results distinguish unreadable files (partial snapshot) from outright failures.
 
