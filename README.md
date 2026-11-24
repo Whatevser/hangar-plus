@@ -165,7 +165,7 @@ The mount location, idle-unmount interval, and **Allow local access** setting li
 4. Check the restored system for a matching **kernel, initramfs, and modules**; recreate missing empty **`/dev`, `/proc`, `/sys`, `/run`, `/tmp`, `/var/tmp`** mountpoints inside the image (without overwriting existing directories); configure **the image's** root UUID/fstab and GRUB menu; use **`grub-mkstandalone`** to generate a removable UEFI bootloader with the image's root-UUID locator **embedded into the EFI executable**. Sidecar EFI/vendor GRUB configs are also written, but boot does not depend on the host's GRUB prefix or on finding those sidecar files.
 5. Unmount and detach. For **RAW/IMG**, publish that same sparse disk directly. For **VHDX/VHD/QCOW2/VDI/VMDK**, run `qemu-img convert` to create the requested output.
 
-**RAW avoids the extra conversion and extra populated image copy.** A RAW disk's *virtual capacity* can be much larger than its actual allocated blocks: compare `ls -lh` (logical size) with `du -h` (space used). Use sparse-aware copy tools when moving it.
+**RAW/IMG avoid the extra conversion and extra populated image copy.** A RAW disk's *virtual capacity* can be much larger than its actual allocated blocks: compare `ls -lh` (logical size) with `du -h` (space used). Use sparse-aware copy tools when moving it.
 
 ### Progress, cancellation, and reconnection
 
@@ -215,7 +215,7 @@ For a **local** repository, **Repositories → Access kit** can place these file
 | --- | --- |
 | `hangar-access.key` | Copy of the repository password |
 | `hangar-access.sh` | Standalone restic and bootable disk recovery commands |
-| `hangar-vhd.py` | Standalone bootable disk builder (supports RAW and VHDX/VHD despite the historical filename) |
+| `hangar-vhd.py` | Standalone bootable disk builder (RAW/IMG, VHD/VHDX, QCOW2, VDI and VMDK) |
 
 Re-running **Access kit** can update recognized older generated scripts. It refuses to overwrite an unknown customized script, a symlinked builder, or a mismatched key.
 
