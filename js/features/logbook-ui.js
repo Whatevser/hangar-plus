@@ -795,6 +795,12 @@
                     // A FUSE mount outlives the page by design, so leaving without
                     // dropping it would strand it until the idle timer fires.
                     root.addEventListener('hangar:settings-saved', (event) => this.applyMountSettings(event.detail));
+                    root.addEventListener('hangar:remount-snapshots', (event) => {
+                        const request = event && event.detail;
+                        if (!request) return;
+                        request.claimed = true;
+                        this.remountSnapshots().then(request.resolve, request.reject);
+                    });
                     root.addEventListener('pagehide', () => {
                         this.releaseMount();
                         this.stopVhdMonitor();
@@ -932,6 +938,28 @@
                 const pending = L.unmount(this.repoId).catch(() => null);
                 this._unmounting = pending;
                 return pending;
+            },
+
+            // Settings explicitly requests a fresh mount at the saved mount root.
+            // Do not just refresh the UI: systemd's existing mount process still
+            // serves its original path/options until the service is stopped.
+            async remountSnapshots() {
+                if (this.busy) throw fail('Logbook is busy; retry after the current operation.');
+                if (!this.repoId || !this.repo)
+                    return { mounted: false, message: 'No repository selected; settings apply on the next mount.' };
+                await this._unmounting;
+                const current = await L.isMounted(this.repoId);
+                if (current.mounted || ['activating', 'deactivating', 'failed'].includes(current.activeState))
+                    await L.unmount(this.repoId);
+                this.reader = 'none';
+                this.mountPoint = '';
+                this.fallbackReason = '';
+                if (this.moment) await this.loadTree();
+                else await this.ensureMount();
+                if (this.reader !== 'mount')
+                    throw fail('Remount failed: ' + (this.fallbackReason || 'snapshot mount was not ready.'));
+                this.touchIdle();
+                return { mounted: true, message: 'Remounted at ' + this.mountPoint };
             },
 
             // --- status plumbing ----------------------------------------------
