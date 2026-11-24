@@ -24,7 +24,7 @@ Open **Cockpit → Hangar** and:
 3. **Jobs → Run now:** Create a first snapshot. Scheduled runs continue through systemd timers.
 4. **Logbook:** Choose a repository and a moment in time to browse, download, restore, or export it.
 
-Hangar's UI follows Cockpit's light/dark setting. The dependency screen can provision **restic**, **rclone**, and **fuse3** where supported; specialist ISO/disk-export tooling is listed [below](#requirements-and-optional-tools).
+Hangar's UI follows Cockpit's light/dark setting. The dependency screen can provision **restic**, **rclone**, and **fuse3** where supported; specialist disk-export tooling is listed [below](#requirements-and-optional-tools).
 
 ## Screens
 
@@ -138,7 +138,6 @@ Choose a repository, then a snapshot on the timeline. The Logbook can use a **re
 - **Open a directory** to browse that snapshot's tree; **Copy path** copies the corresponding mounted host path when one exists.
 - **Download** a selected file or a selected folder as a ZIP archive in your browser.
 - **Restore…** selected files/folders to an **alternate location** by default. The destination field has a recent-path dropdown (with per-path removal); the last successfully used destination and **Restore without original parent folders** setting are remembered in this browser. Restoring to original paths is a separate, potentially destructive choice.
-- **Data ISO export** is still available through the standalone access-kit CLI; the Logbook's Create ISO button has been removed.
 - **Create disk…** builds a virtual boot disk from a **complete Linux-system snapshot**; see the next section.
 
 The mount location, idle-unmount interval, and **Allow local access** setting live in **Settings**. The **Remount** button beside the mount folder saves pending changes and restarts the current Logbook repository's snapshot mount immediately. Allow local access exposes mounts to local Linux users subject to saved Unix permissions; consider the confidentiality implications before enabling it.
@@ -154,6 +153,9 @@ The mount location, idle-unmount interval, and **Allow local access** setting li
 | **`.raw`** (default) or `.img` | Sparse RAW disk | **Cockpit Virtual Machines, libvirt, QEMU/KVM on Linux** |
 | `.vhdx` | VHDX | Systems needing the VHDX format, such as Hyper-V |
 | `.vhd` | Legacy VHD | Legacy consumers; subject to a smaller disk-size limit |
+| `.qcow2` | QCOW2 | QEMU/KVM virtual disks |
+| `.vdi` | VDI | VirtualBox virtual disks |
+| `.vmdk` | VMDK | VMware virtual disks |
 
 ### What Hangar actually builds
 
@@ -161,7 +163,7 @@ The mount location, idle-unmount interval, and **Allow local access** setting li
 2. Partition it as **GPT** with a **512 MiB FAT32 EFI System Partition** and an **ext4 root partition**.
 3. Attach it using a verified loop device, format the partitions, and run **restic restore directly into ext4**, preserving supported metadata.
 4. Check the restored system for a matching **kernel, initramfs, and modules**; recreate missing empty **`/dev`, `/proc`, `/sys`, `/run`, `/tmp`, `/var/tmp`** mountpoints inside the image (without overwriting existing directories); configure **the image's** root UUID/fstab and GRUB menu; use **`grub-mkstandalone`** to generate a removable UEFI bootloader with the image's root-UUID locator **embedded into the EFI executable**. Sidecar EFI/vendor GRUB configs are also written, but boot does not depend on the host's GRUB prefix or on finding those sidecar files.
-5. Unmount and detach. For **RAW**, publish that same sparse disk directly. For **VHDX/VHD only**, run `qemu-img convert` to create the requested output.
+5. Unmount and detach. For **RAW/IMG**, publish that same sparse disk directly. For **VHDX/VHD/QCOW2/VDI/VMDK**, run `qemu-img convert` to create the requested output.
 
 **RAW avoids the extra conversion and extra populated image copy.** A RAW disk's *virtual capacity* can be much larger than its actual allocated blocks: compare `ls -lh` (logical size) with `du -h` (space used). Use sparse-aware copy tools when moving it.
 
@@ -212,7 +214,7 @@ For a **local** repository, **Repositories → Access kit** can place these file
 | File | Purpose |
 | --- | --- |
 | `hangar-access.key` | Copy of the repository password |
-| `hangar-access.sh` | Standalone restic/ISO/disk recovery commands |
+| `hangar-access.sh` | Standalone restic and bootable disk recovery commands |
 | `hangar-vhd.py` | Standalone bootable disk builder (supports RAW and VHDX/VHD despite the historical filename) |
 
 Re-running **Access kit** can update recognized older generated scripts. It refuses to overwrite an unknown customized script, a symlinked builder, or a mismatched key.
@@ -223,12 +225,11 @@ After connecting that drive to another Linux host:
 cd /path/to/restic-repository
 sudo ./hangar-access.sh snapshots
 sudo ./hangar-access.sh restore latest --target /path/to/recovery
-sudo ./hangar-access.sh iso latest /absolute/path/snapshot.iso
 sudo ./hangar-access.sh raw latest /absolute/path/system.raw
-# Alternatives: vhdx .../system.vhdx or vhd .../system.vhd
+# Alternatives: img, vhdx, vhd, qcow2, vdi, vmdk
 ~~~
 
-The script uses standard restic commands for listing/restoring; ISO and disk exports need their corresponding tools installed on the recovery host.
+The script uses standard restic commands for listing/restoring; bootable disk exports require GRUB and filesystem utilities, plus `qemu-img` for VHD/VHDX/QCOW2/VDI/VMDK.
 
 **Critical security trade-off:** This is opt-in. Keeping `hangar-access.key` **next to the encrypted repository** means someone who copies the drive can decrypt the backups. Keep independent, protected copies of repository credentials if you choose *not* to use the access kit.
 
@@ -302,10 +303,9 @@ sudo make uninstall
 | **restic 0.17+** | Backup, browse, restore, repository management | Hangar dependency setup can install it |
 | **rclone** | rclone-backed destinations | Hangar dependency setup can install it |
 | **fuse3** | Snapshot FUSE browsing | Hangar dependency setup can install it; `restic ls` is a fallback |
-| **xorriso** | Non-bootable data ISO export | Install separately if unavailable |
 | **sfdisk, losetup, mount, umount, blkid, mkfs.vfat, mkfs.ext4** | Bootable disk creation | Host disk/FS tools; check before exporting |
 | **grub-mkstandalone** plus x86-64 EFI modules | Bootable UEFI disks | Install the host's GRUB EFI tooling (e.g., grub-common and grub-efi-amd64-bin on Ubuntu/Mint); guest Secure Boot must be off |
-| **qemu-img** (`qemu-utils`) | **Only VHDX/VHD** conversion | **Not needed for RAW export** |
+| **qemu-img** (`qemu-utils`) | VHD/VHDX/QCOW2/VDI/VMDK conversion | **Not needed for RAW/IMG export** |
 | **Podman or Docker** | Corresponding container-volume jobs | Runtime must already manage those volumes |
 
 On RHEL-family distributions, restic may require EPEL; Hangar can offer a static-binary fallback where appropriate. PackageKit and available package sources vary by distro; Hangar cannot guarantee every optional recovery utility will be installed automatically.
@@ -314,7 +314,7 @@ On RHEL-family distributions, restic may require EPEL; Hangar can offer a static
 
 - **Encryption:** restic encrypts repositories. Root can read the password key files in `/etc/hangar/repos/`; protect the host and backups accordingly.
 - **Systemd credentials:** Backup jobs provide repository passwords using `LoadCredential=` rather than exposing passwords in process arguments.
-- **Decrypted exports:** Downloaded files, data ISOs, RAW/VHDX/VHD images, and access kits can reveal private contents. They are **not encrypted restic repositories**.
+- **Decrypted exports:** Downloaded files, virtual disk images, and access kits can reveal private contents. They are **not encrypted restic repositories**.
 - **Container consistency:** Pausing a database process is not equivalent to obtaining an application-consistent backup. Use clean shutdown or verified dumps.
 - **No cluster dashboard:** Hangar manages one Cockpit host; restic snapshots record their host/path identity and multiple hosts can use supported shared repositories, but Hangar is not a multi-host orchestration system.
 - **Not every manual operation is detached:** Browser-connected tasks may be interrupted by a lost Cockpit session. Systemd backup jobs and bootable disk exports are the explicit durable exceptions.
