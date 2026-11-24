@@ -1,0 +1,40 @@
+<!-- Disk export takes a base filename and a format separately; never require users
+     to remember a supported extension or risk constructing a double extension. -->
+<div class="modal fade" id="hangar-disk-export" tabindex="-1"
+     aria-labelledby="hangar-disk-export-title" aria-hidden="true"
+     x-data="hangarDiskExport()" @hidden.bs.modal="cancel()">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <form @submit.prevent="submit()">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="hangar-disk-export-title">Create bootable disk</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"
+                            aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <label class="form-label" for="hangar-disk-base">Filename (without extension)</label>
+                    <div class="input-group">
+                        <input id="hangar-disk-base" class="form-control hangar-mono"
+                               type="text" x-model="baseName" spellcheck="false"
+                               autocomplete="off" placeholder="/var/tmp/hangar-snapshot">
+                        <select class="form-select" style="max-width: 7rem" x-model="format"
+                                aria-label="Disk image format">
+                            <option value="raw">.raw</option>
+                            <option value="img">.img</option>
+                            <option value="vhdx">.vhdx</option>
+                            <option value="vhd">.vhd</option>
+                        </select>
+                    </div>
+                    <div class="form-text">Full destination path on the Cockpit host. The format is appended automatically.</div>
+                    <div class="small hangar-mono mt-2" x-show="valid()" x-text="outputPath()"></div>
+                    <div class="text-danger small mt-2" x-show="!valid()" x-text="problem()"></div>
+                    <p class="small text-warning-emphasis mt-3 mb-0">The image contains decrypted files and credentials. This operation does not test bootability.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary" :disabled="!valid()">Create disk</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
