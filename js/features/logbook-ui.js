@@ -39,6 +39,56 @@
     const RESTORE_MODES = ['alternate', 'original'];
     const DEFAULT_RESTORE_MODE = 'alternate';
     const DEFAULT_RESTORE_TARGET = '/var/tmp/hangar-restore';
+    const RESTORE_PREFS_KEY = 'hangar:restore-preferences:v1';
+    const MAX_RESTORE_RECENTS = 12;
+    const DISK_MODAL_ID = 'hangar-disk-export';
+    const DISK_FORMATS = ['raw', 'img', 'vhdx', 'vhd'];
+
+    // Browser-local UI preferences, not privileged repository settings. Ignore
+    // corrupt/invalid stored paths and do not let storage failures block restore.
+    function safeRestorePath(path) {
+        return typeof path === 'string' && path.startsWith('/') &&
+            path.length <= 4096 && !/[\x00-\x1f\x7f]/.test(path) && path !== '/';
+    }
+
+    function normalizeRestorePrefs(input) {
+        const o = input && typeof input === 'object' ? input : {};
+        const seen = new Set();
+        const paths = [];
+        (Array.isArray(o.paths) ? o.paths : []).forEach((path) => {
+            if (!safeRestorePath(path) || seen.has(path) || paths.length >= MAX_RESTORE_RECENTS) return;
+            seen.add(path);
+            paths.push(path);
+        });
+        return { paths, dropParent: o.dropParent === true };
+    }
+
+    function readRestorePrefs(storage) {
+        try {
+            const store = storage || root.localStorage;
+            return normalizeRestorePrefs(JSON.parse(store.getItem(RESTORE_PREFS_KEY) || '{}'));
+        } catch (_) {
+            return normalizeRestorePrefs(null);
+        }
+    }
+
+    function writeRestorePrefs(prefs, storage) {
+        const normalized = normalizeRestorePrefs(prefs);
+        try {
+            const store = storage || root.localStorage;
+            store.setItem(RESTORE_PREFS_KEY, JSON.stringify(normalized));
+        } catch (_) { /* private browsing or blocked localStorage */ }
+        return normalized;
+    }
+
+    function diskExportPath(baseName, format) {
+        const name = str(baseName).trim();
+        if (!DISK_FORMATS.includes(format) || !name.startsWith('/') || name === '/' ||
+            /[\x00-\x1f\x7f]/.test(name) || name.length > 4000 ||
+            name.endsWith('/') || /\.(raw|img|vhdx|vhd)$/i.test(name))
+            return '';
+        return name + '.' + format;
+    }
 
     const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
         'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -1332,26 +1382,6 @@
                 }
             },
 
-            // --- non-bootable data ISO export -------------------------------
-            async createIso() {
-                if (!this.moment || this.busy || typeof root.prompt !== 'function') return;
-                const defaultPath = '/var/tmp/hangar-' + this.moment.id.slice(0, 12) + '.iso';
-                const name = root.prompt('Save a DECRYPTED, non-bootable data ISO on this Cockpit host at:', defaultPath);
-                if (!name) return;
-                this.beginBusy('Creating data ISO…');
-                this.clearStatus();
-                try {
-                    await cockpit.spawn(['/usr/libexec/hangar/hangar-portable', 'iso',
-                        this.repoId, this.moment.id, name.trim()], { superuser: 'require', err: 'message' });
-                    this.noticeKind = 'success';
-                    this.notice = 'Decrypted data ISO created at ' + name.trim() + '. It is not a bootable system image.';
-                } catch (e) {
-                    this.handleError(e);
-                } finally {
-                    this.endBusy();
-                }
-            },
-
             // --- durable, reconnectable bootable disk export -----------------
             vhdIsRunning() {
                 return this.vhdJob && ['running', 'cancelling'].includes(this.vhdJob.state);
@@ -1437,20 +1467,21 @@
             destroy() { this.stopVhdMonitor(); },
 
             async createVhdx() {
-                if (this.vhdIsRunning() || this.vhdStartPending || this.busy ||
-                    !this.moment || typeof root.prompt !== 'function') return;
+                if (this.vhdIsRunning() || this.vhdStartPending || this.busy || !this.moment) return;
+                if (!modalPresent(DISK_MODAL_ID)) {
+                    this.handleError(fail('Disk export dialog is missing. Reload Hangar and try again.'));
+                    return;
+                }
+                const chosen = await diskExportDialog({ snapshot: this.moment.id });
+                if (!chosen) return;
                 if (typeof root.confirm !== 'function' || !root.confirm(
-                    'Create a DECRYPTED UEFI disk from this complete Linux snapshot? ' +
-                    'It contains unencrypted keys and credentials. The build runs as a ' +
-                    'systemd job even if Cockpit disconnects. No VM or boot test is performed. Continue?')) return;
-                const initial = '/var/tmp/hangar-' + this.moment.id.slice(0, 12) + '.raw';
-                const name = root.prompt('Save bootable disk on this host (.raw recommended; .img, .vhdx, .vhd supported):', initial);
-                if (!name || !name.trim()) return;
+                    'Create a DECRYPTED UEFI disk at ' + chosen.path + '? ' +
+                    'The job runs independently of Cockpit and boot is not tested. Continue?')) return;
                 this.vhdStartPending = true;
                 this.clearStatus();
                 try {
                     this.vhdJob = await this.vhdRequest(['start', this.repoId,
-                        this.moment.id, name.trim()]);
+                        this.moment.id, chosen.path]);
                     this.vhdShowLog = false;
                     this.vhdConnection = '';
                 } catch (e) {
@@ -1709,6 +1740,57 @@
         };
     }
 
+    // ---- disk export modal ---------------------------------------------------
+    function hangarDiskExport() {
+        return {
+            baseName: '',
+            format: 'raw',
+            _resolve: null,
+            init() {
+                if (!root.addEventListener) return;
+                root.addEventListener('hangar:disk-export', (ev) => {
+                    const o = (ev && ev.detail) || {};
+                    this.baseName = '/var/tmp/hangar-' + str(o.snapshot).slice(0, 12);
+                    this.format = 'raw';
+                    this._resolve = o.resolve || null;
+                    showModal(DISK_MODAL_ID);
+                });
+            },
+            outputPath() { return diskExportPath(this.baseName, this.format); },
+            valid() { return !!this.outputPath(); },
+            problem() {
+                if (this.valid()) return '';
+                if (/\.(raw|img|vhdx|vhd)$/i.test(str(this.baseName).trim()))
+                    return 'Enter the filename without an extension; choose it from the dropdown.';
+                return 'Enter an absolute destination filename (without an extension).';
+            },
+            submit() {
+                const path = this.outputPath();
+                if (!path) return;
+                const resolve = this._resolve;
+                this._resolve = null;
+                hideModal(DISK_MODAL_ID);
+                if (resolve) resolve({ path, format: this.format });
+            },
+            cancel() {
+                const resolve = this._resolve;
+                this._resolve = null;
+                if (resolve) resolve(null);
+            }
+        };
+    }
+
+    function diskExportDialog(opts) {
+        return new Promise((resolve) => {
+            if (!root.dispatchEvent || typeof root.CustomEvent !== 'function') {
+                resolve(null);
+                return;
+            }
+            root.dispatchEvent(new root.CustomEvent('hangar:disk-export',
+                { detail: Object.assign({}, opts, { resolve }) }));
+        });
+    }
+
     // ---- the restore modal component ---------------------------------------
 
     // Its own component rather than state on the screen, matching confirm.html and
@@ -1720,6 +1802,8 @@
             mode: DEFAULT_RESTORE_MODE,
             target: DEFAULT_RESTORE_TARGET,
             dropParent: false,
+            recentTargets: [],
+            historyOpen: false,
             selection: [],
             snapshot: '',
             momentLabel: '',
@@ -1735,9 +1819,12 @@
                     this.snapshot = str(o.snapshot);
                     this.momentLabel = str(o.momentLabel);
                     this.summary = o.summary || selectionSummary(this.selection);
+                    const prefs = readRestorePrefs();
                     this.mode = DEFAULT_RESTORE_MODE;
-                    this.target = o.defaultTarget || DEFAULT_RESTORE_TARGET;
-                    this.dropParent = false;
+                    this.recentTargets = prefs.paths;
+                    this.target = o.defaultTarget || prefs.paths[0] || DEFAULT_RESTORE_TARGET;
+                    this.dropParent = prefs.dropParent;
+                    this.historyOpen = false;
                     this.dialogError = '';
                     this._resolve = o.resolve || null;
                     this.open = true;
@@ -1763,6 +1850,19 @@
                 if (picked === null || picked === undefined) return false;
                 this.target = picked;
                 return true;
+            },
+
+            pickRecent(path) {
+                if (!safeRestorePath(path)) return;
+                this.target = path;
+                this.historyOpen = false;
+            },
+
+            forgetRecent(path) {
+                const saved = readRestorePrefs();
+                saved.paths = saved.paths.filter((entry) => entry !== path);
+                this.recentTargets = writeRestorePrefs(saved).paths;
+                if (!this.recentTargets.length) this.historyOpen = false;
             },
 
             selectionPaths() { return includePathsFrom(this.selection); },
@@ -1818,6 +1918,13 @@
                         return;
                     }
                     if (!okay) return;
+                }
+                if (plan.mode === 'alternate') {
+                    const prefs = readRestorePrefs();
+                    if (safeRestorePath(plan.target))
+                        prefs.paths = [plan.target, ...prefs.paths.filter((p) => p !== plan.target)];
+                    prefs.dropParent = this.dropParent;
+                    this.recentTargets = writeRestorePrefs(prefs).paths;
                 }
                 hideModal(RESTORE_MODAL_ID);
                 this.open = false;
@@ -1910,9 +2017,6 @@
 '      <button type="button" class="btn btn-sm btn-primary"' +
 '              title="Select one file or folder. Folders download as ZIP archives."' +
 '              :disabled="!canDownload() || busy" @click="download()">Download</button>' +
-'      <button type="button" class="btn btn-sm btn-primary"' +
-'              title="Create an unencrypted data ISO from the selected complete snapshot (requires xorriso)."' +
-'              :disabled="!moment || busy || vhdIsRunning()" @click="createIso()">Create ISO…</button>' +
 '      <button type="button" class="btn btn-sm" :class="vhdIsRunning() ? \'btn-danger\' : \'btn-primary\'"' +
 '              title="Export a bootable RAW disk by default (.vhdx/.vhd optional); click again to abort."' +
 '              :disabled="vhdStartPending || vhdAbortPending || vhdJob.state === \'cancelling\' || (!vhdIsRunning() && (!moment || busy))"' +
@@ -2107,6 +2211,7 @@
 
     root.hangarLogbookUi = hangarLogbookUi;
     root.hangarRestore = hangarRestore;
+    root.hangarDiskExport = hangarDiskExport;
 
     const API = {
         // pure
@@ -2118,9 +2223,11 @@
         unreadableFromMessages, unreadableFromError,
         compareEntries, includePathsFrom, template,
         // components and glue
-        hangarLogbookUi, hangarRestore, restoreDialog, mount,
+        hangarLogbookUi, hangarRestore, restoreDialog,
+        hangarDiskExport, diskExportDialog, diskExportPath,
+        normalizeRestorePrefs, readRestorePrefs, writeRestorePrefs, mount,
         RESTORE_MODES, DEFAULT_RESTORE_MODE, DEFAULT_RESTORE_TARGET,
-        CONTAINER_ID, RESTORE_MODAL_ID
+        CONTAINER_ID, RESTORE_MODAL_ID, DISK_MODAL_ID, RESTORE_PREFS_KEY
     };
     Object.assign(hangarLogbookUi, API);
     if (typeof module !== 'undefined' && module.exports) module.exports = API;
