@@ -1557,18 +1557,18 @@
         // Each button repeats its verb for every row, so the accessible name has to
         // name the repository too — "Test" five times over is unusable by voice or
         // by screen reader.
-        '            <button type="button" class="btn btn-primary" @click="testConnection(row)"',
+        '            <button type="button" class="btn btn-secondary" @click="testConnection(row)"',
         '                    :disabled="!!row.busy" :aria-label="\'Test \' + row.title">Test</button>',
-        '            <button type="button" class="btn btn-primary" @click="check(row)"',
+        '            <button type="button" class="btn btn-secondary" @click="check(row)"',
         '                    :disabled="!!row.busy" :aria-label="\'Check \' + row.title">Check</button>',
-        '            <button type="button" class="btn btn-primary" @click="unlock(row)"',
+        '            <button type="button" class="btn btn-secondary" @click="unlock(row)"',
         '                    :disabled="!!row.busy" :aria-label="\'Unlock \' + row.title">Unlock</button>',
-        '            <button type="button" class="btn btn-primary" x-show="row.repo.kind === \'local\'"' +
+        '            <button type="button" class="btn btn-secondary" x-show="row.repo.kind === \'local\'"' +
 '                    title="Optionally place a plaintext restic key and access script alongside this local repository."' +
 '                    @click="createAccessKit(row)" :disabled="!!row.busy">Access kit</button>',
-'            <button type="button" class="btn btn-primary" @click="openEdit(row)"',
+'            <button type="button" class="btn btn-secondary" @click="openEdit(row)"',
         '                    :disabled="!!row.busy" :aria-label="\'Edit \' + row.title">Edit</button>',
-        '            <button type="button" class="btn btn-primary" @click="remove(row)"',
+        '            <button type="button" class="btn btn-danger" @click="remove(row)"',
         '                    :disabled="!!row.busy" :aria-label="\'Remove \' + row.title">Remove</button>',
         '          </div>',
         '        </div>',

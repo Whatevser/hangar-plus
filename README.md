@@ -33,7 +33,7 @@ Hangar's UI follows Cockpit's light/dark setting. The dependency screen can prov
 | **Overview** | See the health of jobs, recent outcomes, unreadable-file warnings, destination/authentication problems, repository sizes, and actionable fixes. |
 | **Jobs** | Create, edit, enable, disable, run, stop, and inspect scheduled backups. Configure source types, consistency, schedules, retention, and hooks. |
 | **Repositories** | Manage local/remote restic destinations, import an existing local repository, test connectivity, initialize, unlock, check integrity, monitor size, and configure size safeguards. |
-| **Logbook** | Browse snapshots on a timeline, inspect change badges, copy mounted paths, download files/ZIPs, restore selections, export a data ISO, or produce a bootable virtual disk. |
+| **Logbook** | Browse snapshots on a timeline, inspect change badges, copy mounted paths, download files/ZIPs, restore selections, or produce a bootable virtual disk. |
 | **Settings** | Adjust Logbook mount behavior, failure reporting, repository-size refresh, dependency diagnostics, and GitHub-based Hangar updates. |
 
 ### Screenshots
@@ -137,17 +137,17 @@ Choose a repository, then a snapshot on the timeline. The Logbook can use a **re
 
 - **Open a directory** to browse that snapshot's tree; **Copy path** copies the corresponding mounted host path when one exists.
 - **Download** a selected file or a selected folder as a ZIP archive in your browser.
-- **Restore…** selected files/folders to an **alternate location** by default. Optionally omit the selected items' original parent directories. Restoring to original paths is a separate, potentially destructive choice.
-- **Create ISO…** exports a **decrypted, non-bootable data ISO** of the snapshot. An ISO is for file recovery and does not faithfully reproduce all Unix filesystem metadata.
+- **Restore…** selected files/folders to an **alternate location** by default. The destination field has a recent-path dropdown (with per-path removal); the last successfully used destination and **Restore without original parent folders** setting are remembered in this browser. Restoring to original paths is a separate, potentially destructive choice.
+- **Data ISO export** is still available through the standalone access-kit CLI; the Logbook's Create ISO button has been removed.
 - **Create disk…** builds a virtual boot disk from a **complete Linux-system snapshot**; see the next section.
 
-The mount location, idle-unmount interval, and **Allow local access** setting live in **Settings**. Allow local access exposes mounts to local Linux users subject to saved Unix permissions; consider the confidentiality implications before enabling it.
+The mount location, idle-unmount interval, and **Allow local access** setting live in **Settings**. The **Remount** button beside the mount folder saves pending changes and restarts the current Logbook repository's snapshot mount immediately. Allow local access exposes mounts to local Linux users subject to saved Unix permissions; consider the confidentiality implications before enabling it.
 
-**Connection behavior matters:** Logbook browsing, a manual restore, data ISO creation, repository checking, and pruning are **not all independent of the Cockpit connection**. Avoid closing the tab during those manual operations. Normal background backups and bootable-disk exports use independent systemd jobs.
+**Connection behavior matters:** Logbook browsing, a manual restore, repository checking, and pruning are **not all independent of the Cockpit connection**. Avoid closing the tab during those manual operations. Normal background backups and bootable-disk exports use independent systemd jobs.
 
 ## Bootable virtual disks: RAW by default
 
-**Logbook → Create disk…** produces a **decrypted virtual disk** from a selected **full Linux root snapshot**. It **does not create or boot a VM**. The output filename determines the format:
+**Logbook → Create disk…** produces a **decrypted virtual disk** from a selected **full Linux root snapshot**. Enter the absolute filename **without an extension** and select the disk format from the dropdown (.raw is preselected). Hangar appends the selected extension automatically. It **does not create or boot a VM**.
 
 | Extension | Format | Recommended use |
 | --- | --- | --- |

@@ -61,10 +61,32 @@
                     <div class="mb-3" x-show="mode === 'alternate'">
                         <label class="form-label" for="hangar-restore-target">Restore into</label>
                         <div class="d-flex gap-2 align-items-start">
-                            <div class="flex-grow-1">
-                                <input id="hangar-restore-target" class="form-control hangar-mono"
-                                   type="text" x-model="target" spellcheck="false"
-                                   autocomplete="off" placeholder="/var/tmp/hangar-restore">
+                            <div class="flex-grow-1 position-relative">
+                                <div class="input-group">
+                                    <input id="hangar-restore-target" class="form-control hangar-mono"
+                                           type="text" x-model="target" spellcheck="false"
+                                           autocomplete="off" placeholder="/var/tmp/hangar-restore">
+                                    <button type="button" class="btn btn-outline-secondary"
+                                            :disabled="!recentTargets.length"
+                                            :aria-expanded="historyOpen ? 'true' : 'false'"
+                                            aria-label="Recent restore destinations"
+                                            title="Recent restore destinations"
+                                            @click="historyOpen = !historyOpen">▾</button>
+                                </div>
+                                <div class="dropdown-menu show w-100 mt-1 p-1"
+                                     style="max-height: 13rem; overflow-y: auto; z-index: 1080;"
+                                     x-show="historyOpen &amp;&amp; recentTargets.length"
+                                     @click.outside="historyOpen = false">
+                                    <template x-for="path in recentTargets" :key="path">
+                                        <div class="d-flex align-items-center gap-1">
+                                            <button type="button" class="dropdown-item flex-grow-1 text-truncate hangar-mono"
+                                                    :title="path" @click="pickRecent(path)" x-text="path"></button>
+                                            <button type="button" class="btn btn-sm btn-link text-secondary text-decoration-none"
+                                                    :aria-label="'Remove ' + path + ' from recent destinations'"
+                                                    :title="'Remove ' + path" @click.stop="forgetRecent(path)">×</button>
+                                        </div>
+                                    </template>
+                                </div>
                             </div>
                             <button type="button" class="btn btn-outline-secondary text-nowrap align-self-start"
                                     @click="browseTarget()" aria-label="Browse for the restore destination">Browse…</button>
