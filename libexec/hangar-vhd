@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create an offline, UEFI-bootable VHDX/VHD/RAW from a full Linux restic snapshot.
+"""Create an offline, UEFI-bootable disk (RAW/VHD/VHDX/QCOW2/VDI/VMDK) from a Linux snapshot.
 
 No VM, live-boot tooling, partition writes to host disks or host NVRAM changes.
 Only a NEW, private sparse RAW file is partitioned and mounted via a verified
