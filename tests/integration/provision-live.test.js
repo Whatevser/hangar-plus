@@ -144,7 +144,7 @@ test('planFor produces a step for every genuinely missing tool', () => {
 
 test('restic is the only non-optional tool', () => {
     // Everything else must degrade rather than block: no fuse3 means the Logbook uses
-    // the ls fallback, no rear means no rescue image, but backups still run.
+    // the ls fallback, no rclone means no rclone-backed remote, but backups still run.
     for (const tool of P.TOOLS) {
         const req = P.requirementFor(tool);
         assert.equal(!req.optional, tool === 'restic',
