@@ -8,6 +8,7 @@
         'html/modals/rclone-remote.html',
         'html/modals/job-edit.html',
         'html/modals/restore.html',
+        'html/modals/disk-export.html',
         'html/modals/provision.html',
         'html/modals/password.html',
         'html/modals/fspicker.html'
