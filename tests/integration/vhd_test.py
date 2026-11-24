@@ -41,33 +41,31 @@ class VirtualDiskTests(unittest.TestCase):
             vhd.publish_image(staged, target)
             self.assertEqual(target.read_bytes(), b"new")
 
-    def test_raw_skips_conversion_and_keeps_sparse_virtual_length(self):
-        with tempfile.TemporaryDirectory() as d:
-            output = Path(d) / "recovered.raw"
-            password = Path(d) / "key"
-            password.write_text("test-secret")
-            def fake_raw(restic, snapshot, raw, root, size):
-                # This is intentionally a sparse file, like the real builder.
-                with raw.open("wb") as f:
-                    f.truncate(16 * 1024 * 1024)
-                    f.seek(512)
-                    f.write(b"EFI TEST DATA")
-            with patch.object(vhd, "preflight", side_effect=vhd.output_format), \
-                 patch.object(vhd, "restore_bytes", return_value=1024), \
-                 patch.object(vhd, "make_raw", side_effect=fake_raw), \
-                 patch.object(vhd, "convert_with_progress", side_effect=AssertionError(
-                     "RAW must never be converted")), \
-                 patch.object(vhd, "command", side_effect=AssertionError(
-                     "RAW must never call qemu-img")), \
-                 patch.object(vhd, "PROGRESS_FILE", None):
-                vhd.build("/repo", password, "latest", output)
-            self.assertEqual(output.stat().st_size, 16 * 1024 * 1024)
-            with output.open("rb") as f:
-                f.seek(512)
-                self.assertEqual(f.read(13), b"EFI TEST DATA")
-            # On Linux filesystems where sparse support exists, no full-capacity
-            # 16 MiB allocation should have appeared.
-            self.assertLess(output.stat().st_blocks * 512, output.stat().st_size // 2)
+    def test_raw_and_img_skip_conversion_and_keep_sparse_virtual_length(self):
+        for suffix in (".raw", ".img"):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as d:
+                output = Path(d) / ("recovered" + suffix)
+                password = Path(d) / "key"
+                password.write_text("test-secret")
+                def fake_raw(restic, snapshot, raw, root, size):
+                    with raw.open("wb") as fh:
+                        fh.truncate(16 * 1024 * 1024)
+                        fh.seek(512)
+                        fh.write(b"EFI TEST DATA")
+                with patch.object(vhd, "preflight", side_effect=vhd.output_format), \
+                     patch.object(vhd, "restore_bytes", return_value=1024), \
+                     patch.object(vhd, "make_raw", side_effect=fake_raw), \
+                     patch.object(vhd, "convert_with_progress", side_effect=AssertionError(
+                         "RAW/IMG must never be converted")), \
+                     patch.object(vhd, "command", side_effect=AssertionError(
+                         "RAW/IMG must never call qemu-img")), \
+                     patch.object(vhd, "PROGRESS_FILE", None):
+                    vhd.build("/repo", password, "latest", output)
+                self.assertEqual(output.stat().st_size, 16 * 1024 * 1024)
+                with output.open("rb") as fh:
+                    fh.seek(512)
+                    self.assertEqual(fh.read(13), b"EFI TEST DATA")
+                self.assertLess(output.stat().st_blocks * 512, output.stat().st_size // 2)
 
     def test_converted_formats_use_matching_qemu_driver_and_staging_extension(self):
         formats = ((".vhdx", "vhdx"), (".vhd", "vpc"),
