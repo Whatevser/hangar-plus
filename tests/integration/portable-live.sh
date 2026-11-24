@@ -56,6 +56,7 @@ if python3 /usr/libexec/hangar/hangar-portable access-kit portable-ci; then
     echo "Custom access script must not be replaced" >&2; exit 1
 fi
 sed -i '$d' "$work/repo/hangar-access.sh"
+sed -i '$d' "$work/repo/hangar-access.sh"
 python3 /usr/libexec/hangar/hangar-portable access-kit portable-ci
 
 # Verify all disk aliases reach the copied Python builder. A fake interpreter
