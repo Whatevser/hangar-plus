@@ -691,6 +691,60 @@ test('a failed write keeps the edit and surfaces the error with its action', asy
     assert.equal(c.saving, false);
 });
 
+test('Remount saves pending path edits then requests a live systemd remount', async () => {
+    const deps = stubDeps();
+    const c = UI.hangarSettingsUi(deps);
+    await c.load();
+    c.form.mountRoot = '/srv/new-mount';
+    const events = [];
+    const beforeEvent = globalThis.dispatchEvent;
+    const beforeConstructor = globalThis.CustomEvent;
+    globalThis.CustomEvent = class {
+        constructor(type, options) { this.type = type; this.detail = options.detail; }
+    };
+    globalThis.dispatchEvent = (event) => {
+        events.push(event.type);
+        if (event.type === 'hangar:remount-snapshots') {
+            event.detail.claimed = true;
+            event.detail.resolve({ mounted: true, message: 'Remounted at /srv/new-mount/nas' });
+        }
+    };
+    try {
+        assert.equal(await c.remountSnapshots(), true);
+        assert.equal(deps.written[0].mountRoot, '/srv/new-mount');
+        assert.deepEqual(events, ['hangar:settings-saved', 'hangar:remount-snapshots']);
+        assert.equal(c.remountMessage, 'Remounted at /srv/new-mount/nas');
+        assert.equal(c.remountBusy, false);
+    } finally {
+        if (beforeEvent === undefined) delete globalThis.dispatchEvent;
+        else globalThis.dispatchEvent = beforeEvent;
+        if (beforeConstructor === undefined) delete globalThis.CustomEvent;
+        else globalThis.CustomEvent = beforeConstructor;
+    }
+});
+
+test('Remount fails safely if the Logbook listener is not available', async () => {
+    const c = UI.hangarSettingsUi(stubDeps());
+    await c.load();
+    const beforeEvent = globalThis.dispatchEvent;
+    const beforeConstructor = globalThis.CustomEvent;
+    globalThis.CustomEvent = class {
+        constructor(type, options) { this.type = type; this.detail = options.detail; }
+    };
+    globalThis.dispatchEvent = () => {};
+    try {
+        assert.equal(await c.remountSnapshots(), false);
+        assert.match(c.remountError, /Logbook mount controller is not ready/);
+        c.form.mountRoot = 'relative';
+        assert.equal(await c.remountSnapshots(), false);
+    } finally {
+        if (beforeEvent === undefined) delete globalThis.dispatchEvent;
+        else globalThis.dispatchEvent = beforeEvent;
+        if (beforeConstructor === undefined) delete globalThis.CustomEvent;
+        else globalThis.CustomEvent = beforeConstructor;
+    }
+});
+
 test('revert() puts the saved values back', async () => {
     const c = UI.hangarSettingsUi(stubDeps());
     await c.load();
