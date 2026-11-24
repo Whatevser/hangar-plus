@@ -1393,6 +1393,38 @@ test('the mount runtime cap is always the positive integer systemd insists on', 
     });
 });
 
+test('Remount stops the existing snapshot unit before reloading at the new path', async () => {
+    const c = attached();
+    c.reader = 'mount';
+    c.mountPoint = '/old/nas';
+    c.moment = { id: 'a'.repeat(64) };
+    const calls = [];
+    await withPatched(Core, {
+        isMounted: async (repo) => {
+            calls.push('inspect:' + repo);
+            return { mounted: true, activeState: 'active' };
+        },
+        unmount: async (repo) => { calls.push('stop:' + repo); }
+    }, async () => {
+        await withPatched(c, { loadTree: async () => {
+            calls.push('reload');
+            c.reader = 'mount';
+            c.mountPoint = '/new/nas';
+        } }, async () => {
+            const result = await c.remountSnapshots();
+            assert.equal(result.mounted, true);
+            assert.equal(result.message, 'Remounted at /new/nas');
+        });
+    });
+    assert.deepEqual(calls, ['inspect:nas', 'stop:nas', 'reload']);
+});
+
+test('Remount refuses to interrupt an ongoing Logbook operation', async () => {
+    const c = attached();
+    c.busy = true;
+    await assert.rejects(() => c.remountSnapshots(), /busy/);
+});
+
 test('an unmount that fails is swallowed rather than blocking the screen', async () => {
     await withPatched(Core, {
         unmount: () => Promise.reject(new Error('unit not loaded'))
