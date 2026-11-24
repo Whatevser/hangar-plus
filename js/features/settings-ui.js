@@ -536,6 +536,9 @@
         return {
             loading: true,
             saving: false,
+            remountBusy: false,
+            remountMessage: '',
+            remountError: '',
             saved: null,            // last known on-disk settings
             form: formFromSettings(null),
             error: null,            // fatal load or save failure
@@ -656,6 +659,37 @@
             revert() {
                 this.form = formFromSettings(this.saved);
                 this.savedAt = null;
+            },
+
+            async remountSnapshots() {
+                if (this.remountBusy || this.saving || this.loading || this.problems().length) return false;
+                this.remountBusy = true;
+                this.remountMessage = '';
+                this.remountError = '';
+                try {
+                    // Apply what the user actually entered; remounting with the
+                    // previous saved path while edits are pending is misleading.
+                    if (this.dirty() && !await this.save()) return false;
+                    if (!root.dispatchEvent || typeof root.CustomEvent !== 'function')
+                        throw new Error('The Logbook mount controller is unavailable.');
+                    const request = { claimed: false, resolve: null, reject: null };
+                    const done = new Promise((resolve, reject) => {
+                        request.resolve = resolve;
+                        request.reject = reject;
+                    });
+                    root.dispatchEvent(new root.CustomEvent('hangar:remount-snapshots',
+                        { detail: request }));
+                    if (!request.claimed)
+                        throw new Error('The Logbook mount controller is not ready. Reload Hangar.');
+                    const outcome = await done;
+                    this.remountMessage = outcome.message || 'Snapshot mount refreshed.';
+                    return true;
+                } catch (e) {
+                    this.remountError = errorText(e);
+                    return false;
+                } finally {
+                    this.remountBusy = false;
+                }
             },
 
             // --- GitHub main-branch self updates ----------------------------
@@ -853,11 +887,20 @@
 
         '    <div class="mb-3">',
         '      <label class="form-label" for="hangar-mount-root">Snapshot mount folder</label>',
-        '      <input class="form-control" id="hangar-mount-root" type="text"',
-        '             x-model="form.mountRoot" @input="touched()"',
-        '             :class="hasProblem(\'mountRoot\') ? \'is-invalid\' : \'\'"',
-        '             :aria-invalid="hasProblem(\'mountRoot\') ? \'true\' : \'false\'"',
-        '             aria-describedby="hangar-mount-root-help">',
+        '      <div class="d-flex align-items-start gap-2">',
+        '        <input class="form-control" id="hangar-mount-root" type="text"',
+        '               x-model="form.mountRoot" @input="touched()"',
+        '               :class="hasProblem(\'mountRoot\') ? \'is-invalid\' : \'\'"',
+        '               :aria-invalid="hasProblem(\'mountRoot\') ? \'true\' : \'false\'"',
+        '               aria-describedby="hangar-mount-root-help">',
+        '        <button type="button" class="btn btn-outline-secondary text-nowrap"',
+        '                :disabled="remountBusy || saving || loading || problems().length > 0"',
+        '                @click="remountSnapshots()"',
+        '                title="Save changed settings, then restart the current snapshot mount"',
+        '                x-text="remountBusy ? \'Remounting…\' : \'Remount\'"></button>',
+        '      </div>',
+        '      <div class="small text-success mt-1" role="status" x-show="remountMessage" x-text="remountMessage"></div>',
+        '      <div class="small text-danger mt-1" role="alert" x-show="remountError" x-text="remountError"></div>',
         '      <div class="form-text" id="hangar-mount-root-help">',
         '        Where the Logbook mounts a snapshot while you browse it. One subfolder',
         '        per repository is created underneath, and removed again on unmount.',
