@@ -165,8 +165,8 @@ is tagged only so the repository and the published archive agree on a version.
 
 ## [1.0.0] — 2026-08-08
 
-First stable release. File-level backup with automatic retention thinning, a
-point-in-time snapshot browser, and bare-metal disaster recovery.
+First stable release. File-level backup with automatic retention thinning and a
+point-in-time snapshot browser.
 
 ### Added
 
@@ -198,13 +198,6 @@ point-in-time snapshot browser, and bare-metal disaster recovery.
   instead of dying with the browser channel, and unmounts when idle.
 - Change badges between adjacent snapshots derived from `restic diff --json`.
 
-**Disaster recovery**
-- Bootable rescue image via ReaR. Because ReaR has no restic workflow upstream,
-  Hangar generates the `BACKUP=EXTERNAL` configuration so the same repository
-  serves both file history and bare-metal recovery.
-- **Verify recovery** — builds the rescue image and boots it in a throwaway
-  libvirt VM to prove the restore actually works, rather than assuming it.
-
 **Turnkey setup**
 - Missing prerequisites are installed through the PackageKit D-Bus API, which
   works across RPM and DEB systems without hardcoding a package manager.
@@ -220,27 +213,6 @@ point-in-time snapshot browser, and bare-metal disaster recovery.
   through the environment or the command line.
 - Backend credentials are exported as environment variables, never as
   command-line arguments, so they do not appear in `ps` output.
-
-**Recovery**
-- Bootable rescue image built from the same repository the files live in, with
-  hangar generating the ReaR `BACKUP=EXTERNAL` configuration rather than leaving
-  the unsupported part to be hand-written.
-- **Verify recovery** boots that image in a throwaway libvirt VM, runs the
-  recovery unattended, reads the guest's serial console, reports whether it
-  finished, and removes the VM afterwards. It runs as a transient systemd unit,
-  so it survives a page reload or a dropped connection, and a page opened while
-  a drill is running picks it back up.
-- Drill settings for the disk location, the disk size, the expected system size,
-  firmware, network and timeout — the drill disk must match the *original* disk,
-  because ReaR recreates the recorded partition table.
-- Optional **shrink limit** (`AUTOSHRINK_DISK_SIZE_LIMIT_PERCENTAGE`) for
-  recovering onto a replacement disk slightly smaller than the original.
-- An **Exclude file** field, so the disaster-recovery snapshot skips exactly what
-  the backup job skips instead of carrying hundreds of gigabytes it was told to
-  leave out.
-- The rescue image lands in the operator's home directory by default, not
-  root-only `/var/lib/rear/output`: it is the one file you must be able to find
-  and copy to a USB stick *before* the machine that built it is unavailable.
 
 **Sources beyond the filesystem**
 - **Container volumes**, Podman and Docker. Named volumes are read through
@@ -265,9 +237,6 @@ point-in-time snapshot browser, and bare-metal disaster recovery.
 
 ### Known limitations
 
-- ReaR's restic integration is `BACKUP=EXTERNAL`, which upstream ReaR does not
-  support. This is why the recovery drill exists — verify your rescue image
-  before you need it.
 - Container and libvirt sources back up volumes and domains, but consistency is
   the operator's choice: a running database copied file-by-file may produce a
   snapshot that will not restore. Pause the container, or dump the database in a
