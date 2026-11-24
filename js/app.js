@@ -1,8 +1,8 @@
 // app.js — the Alpine root component.
 //
 // Deliberately thin: it owns tab state and the prerequisite gate, and delegates
-// everything else to the feature modules. Anything that knows about restic, ReaR or
-// systemd belongs in js/core or js/engine, not here.
+// everything else to the feature modules. Backup and systemd details belong in
+// js/core or js/engine, not here.
 'use strict';
 (function (root) {
 
