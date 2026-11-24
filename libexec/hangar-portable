@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Decrypted data ISO, bootable disk export, and an independent access kit.
+"""Bootable virtual disk export and a standalone restic access kit.
 
 Does not run a VM, modify host bootloaders, or import archives.
 """
+import hashlib
 import json
 import os
 import re
 import runpy
-import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -18,7 +17,6 @@ RUNNER = "/usr/libexec/hangar/hangar-run"
 CACHE = "/var/cache/hangar/restic"
 VHD_EXEC = Path("/usr/libexec/hangar/hangar-vhd")
 VHD_BUNDLED = Path("/usr/share/cockpit/hangar/libexec/hangar-vhd")
-SNAPSHOT_RE = re.compile(r"[0-9a-fA-F]{64}\Z")
 REPO_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62})\Z")
 
 
@@ -26,12 +24,10 @@ def abort(message):
     raise ValueError(message)
 
 
-def valid_path(value, suffixes=()):
+def valid_path(value):
     path = Path(value)
     if not path.is_absolute() or "\0" in value or "\n" in value:
         abort("Specify an absolute path on the Cockpit host.")
-    if suffixes and path.suffix.lower() not in suffixes:
-        abort("Expected a " + " or ".join(suffixes) + " file.")
     return path
 
 
@@ -54,120 +50,52 @@ def repository(repo_id):
     return definition, args, env
 
 
-def export_iso(repo_id, snapshot, filename):
-    if not SNAPSHOT_RE.fullmatch(snapshot):
-        abort("Select a full snapshot ID.")
-    output = valid_path(filename, (".iso",))
-    if output.exists():
-        abort("The destination ISO already exists; choose a new name.")
-    if not output.parent.is_dir():
-        abort("The destination directory does not exist.")
-    if not shutil.which("xorriso"):
-        abort("xorriso is required to create an ISO image.")
-    _, args, env = repository(repo_id)
-    # Stage near the destination rather than filling /tmp when the snapshot is large.
-    with tempfile.TemporaryDirectory(prefix=".hangar-iso-", dir=output.parent) as work:
-        source = Path(work) / "contents"
-        source.mkdir()
-        staging_iso = Path(work) / "image.iso"
-        print("Decrypting snapshot into temporary files...", flush=True)
-        subprocess.run(args + ["restore", "--target", str(source), snapshot],
-                       env=env, check=True, stdout=subprocess.DEVNULL)
-        print("Creating data ISO (not bootable)...", flush=True)
-        subprocess.run(["xorriso", "-as", "mkisofs", "-iso-level", "3",
-                        "-R", "-J", "-o", str(staging_iso), str(source)],
-                       check=True, stdout=subprocess.DEVNULL)
-        if output.exists():
-            abort("The destination was created while the ISO was being built.")
-        os.replace(staging_iso, output)
-    print("ISO created: " + str(output), flush=True)
-
-
-# Old access kits used this restic-only wrapper. Recognize it exactly to avoid
-# overwriting a user's custom script while still supporting already-made kits.
-LEGACY_ACCESS_SCRIPT = """#!/bin/sh
-set -eu
-here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec restic -r "$here" --password-file "$here/hangar-access.key" "$@"
-"""
-
-ACCESS_SCRIPT_V2 = r"""#!/bin/sh
-# Hangar standalone access kit v2 — requires restic; ISO also needs xorriso.
+# A generated access kit must remain usable without Hangar installed.
+# Preserve support for the four disk extensions already exposed by Hangar, plus
+# qemu-img's QCOW2, VirtualBox VDI and VMware VMDK conversion formats.
+ACCESS_SCRIPT = """#!/bin/sh
+# Hangar standalone access kit v5 — restic and optional bootable disk exports.
 set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 key="$here/hangar-access.key"
-if [ "$#" -gt 0 ] && [ "$1" = "iso" ]; then
-    shift
-    if [ "$#" -ne 2 ]; then
-        echo "Usage: $0 iso <latest|snapshot-id> </absolute/output.iso>" >&2
-        exit 2
-    fi
-    snapshot=$1
-    output=$2
-    case "$snapshot" in ""|-*) echo "Invalid snapshot ID" >&2; exit 2;; esac
-    case "$output" in /*.iso) ;; *) echo "Use an absolute .iso output path" >&2; exit 2;; esac
-    if [ -e "$output" ] || [ -L "$output" ]; then
-        echo "Refusing to overwrite: $output" >&2
-        exit 1
-    fi
-    output_dir=$(dirname -- "$output")
-    if [ ! -d "$output_dir" ]; then
-        echo "Output directory does not exist: $output_dir" >&2
-        exit 1
-    fi
-    command -v restic >/dev/null 2>&1 || { echo "restic not installed" >&2; exit 1; }
-    command -v xorriso >/dev/null 2>&1 || { echo "xorriso not installed" >&2; exit 1; }
-    work=$(mktemp -d "$output_dir/.hangar-iso.XXXXXXXX")
-    trap 'rm -rf -- "$work"' 0
-    trap 'exit 130' 1 2 3 15
-    mkdir "$work/files"
-    echo "Decrypting snapshot $snapshot..."
-    restic -r "$here" --password-file "$key" restore "$snapshot" --target "$work/files"
-    echo "Creating a non-bootable, unencrypted data ISO..."
-    xorriso -as mkisofs -iso-level 3 -R -J -o "$work/data.iso" "$work/files"
-    if [ -e "$output" ] || [ -L "$output" ]; then
-        echo "Refusing to overwrite: $output" >&2
-        exit 1
-    fi
-    # The temporary image sits on the destination filesystem. Avoid
-    # overwriting existing files (and work on filesystems without hard links).
-    mv -n -- "$work/data.iso" "$output"
-    if [ -e "$work/data.iso" ]; then
-        echo "Refusing to overwrite: $output" >&2
-        exit 1
-    fi
-    echo "ISO created: $output"
-    exit 0
+if [ "$#" -gt 0 ]; then
+    case "$1" in
+        raw|img|vhd|vhdx|qcow2|vdi|vmdk)
+            format=$1
+            shift
+            if [ "$#" -ne 2 ]; then
+                echo "Usage: $0 $format <latest|snapshot-id> </absolute/output.$format>" >&2
+                exit 2
+            fi
+            case "$2" in
+                /*."$format") ;;
+                *) echo "Expected an absolute .$format output path" >&2; exit 2 ;;
+            esac
+            exec python3 "$here/hangar-vhd.py" --repo "$here" --password-file "$key" --snapshot "$1" --output "$2"
+            ;;
+    esac
 fi
 exec restic -r "$here" --password-file "$key" "$@"
 """
 
-# Preserve exact published copies of both v2 and v3 access scripts; they may
-# exist beside a repository and must remain safe to upgrade to RAW-capable v4.
-ACCESS_SCRIPT_V3 = ACCESS_SCRIPT_V2.replace(
-    "Hangar standalone access kit v2", "Hangar standalone access kit v3"
-).replace(
-    'exec restic -r "$here" --password-file "$key" "$@"',
-    '''if [ "$#" -gt 0 ] && { [ "$1" = "vhd" ] || [ "$1" = "vhdx" ]; }; then
-    shift
-    if [ "$#" -ne 2 ]; then
-        echo "Usage: $0 vhdx <latest|snapshot-id> </absolute/output.vhdx>" >&2
-        exit 2
-    fi
-    exec python3 "$here/hangar-vhd.py" --repo "$here" --password-file "$key" --snapshot "$1" --output "$2"
-fi
-exec restic -r "$here" --password-file "$key" "$@"'''
-)
+# Keep old access kits upgradeable *without* retaining any retired exporter code.
+# These hashes are exact SHA-256 digests of Hangar-generated v2/v3/v4 scripts.
+# Match the entire contents; user-modified scripts must never be overwritten.
+KNOWN_LEGACY_SCRIPT_SHA256 = frozenset((
+    "16bcca0b73efa31d40a619e023acc54d18bda90763da7a0f7231af2dc410cdbe",
+    "8f7a3d2deae4775fe0156c7f722c5dfeca376ebc7b0f600980e9081d4e5c5c4d",
+    "643115996602cbd1edbed495b22abbdef02aff390e1e6ae9ab03ed7b0baf9835",
+))
+LEGACY_RESTIC_SCRIPT = '''#!/bin/sh
+set -eu
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec restic -r "$here" --password-file "$here/hangar-access.key" "$@"
+'''
 
-ACCESS_SCRIPT = ACCESS_SCRIPT_V3.replace(
-    "Hangar standalone access kit v3", "Hangar standalone access kit v4"
-).replace(
-    'if [ "$#" -gt 0 ] && { [ "$1" = "vhd" ] || [ "$1" = "vhdx" ]; }; then',
-    'if [ "$#" -gt 0 ] && { [ "$1" = "raw" ] || [ "$1" = "img" ] || [ "$1" = "vhd" ] || [ "$1" = "vhdx" ]; }; then'
-).replace(
-    'Usage: $0 vhdx <latest|snapshot-id> </absolute/output.vhdx>',
-    'Usage: $0 raw <latest|snapshot-id> </absolute/output.raw> (also: img, vhdx, vhd)'
-)
+
+def recognized_access_script(content):
+    return (content == ACCESS_SCRIPT or content == LEGACY_RESTIC_SCRIPT or
+            hashlib.sha256(content.encode("utf-8")).hexdigest() in KNOWN_LEGACY_SCRIPT_SHA256)
 
 
 # Only copies of Hangar's generated helper may be refreshed automatically.
@@ -231,7 +159,7 @@ def export_access_kit(repo_id):
         abort("Existing access-kit key does not match Hangar's password. Not overwriting.")
     if script_dest.exists():
         saved = script_dest.read_text(encoding="utf-8")
-        if saved not in (ACCESS_SCRIPT, ACCESS_SCRIPT_V3, ACCESS_SCRIPT_V2, LEGACY_ACCESS_SCRIPT):
+        if not recognized_access_script(saved):
             abort("An unrecognized access script already exists. Not overwriting it.")
     else:
         saved = None
@@ -262,7 +190,6 @@ def export_access_kit(repo_id):
             raise
 
     print("Standalone access kit ready in " + str(folder), flush=True)
-    print("Run: ./hangar-access.sh iso latest /absolute/path/backup.iso", flush=True)
     print("Bootable disk: ./hangar-access.sh raw latest /absolute/path/backup.raw", flush=True)
     print("WARNING: Anyone with this directory can decrypt the backups.", flush=True)
 
@@ -270,9 +197,7 @@ def export_access_kit(repo_id):
 def main(argv):
     if os.geteuid() != 0:
         abort("Administrator access is required.")
-    if len(argv) == 5 and argv[1] == "iso":
-        export_iso(argv[2], argv[3], argv[4])
-    elif len(argv) in (5, 7) and argv[1] in ("raw", "img", "vhdx", "vhd"):
+    if len(argv) in (5, 7) and argv[1] in ("raw", "img", "vhdx", "vhd", "qcow2", "vdi", "vmdk"):
         _, args, env = repository(argv[2])
         program = [
             sys.executable, str(vhd_builder()),
@@ -290,12 +215,12 @@ def main(argv):
     elif len(argv) == 3 and argv[1] == "access-kit":
         export_access_kit(argv[2])
     else:
-        abort("Usage: hangar-portable iso|raw|img|vhdx|vhd REPO SNAPSHOT OUTPUT | access-kit REPO")
+        abort("Usage: hangar-portable raw|img|vhdx|vhd|qcow2|vdi|vmdk REPO SNAPSHOT OUTPUT | access-kit REPO")
 
 
 if __name__ == "__main__":
     try:
         main(sys.argv)
-    except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+    except (ValueError, OSError) as exc:
         print("Hangar: " + str(exc), file=sys.stderr)
         sys.exit(1)
