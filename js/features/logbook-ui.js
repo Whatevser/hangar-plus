@@ -42,7 +42,7 @@
     const RESTORE_PREFS_KEY = 'hangar:restore-preferences:v1';
     const MAX_RESTORE_RECENTS = 12;
     const DISK_MODAL_ID = 'hangar-disk-export';
-    const DISK_FORMATS = ['raw', 'img', 'vhdx', 'vhd'];
+    const DISK_FORMATS = ['raw', 'img', 'vhdx', 'vhd', 'qcow2', 'vdi', 'vmdk'];
 
     // Browser-local UI preferences, not privileged repository settings. Ignore
     // corrupt/invalid stored paths and do not let storage failures block restore.
@@ -85,7 +85,7 @@
         const name = str(baseName).trim();
         if (!DISK_FORMATS.includes(format) || !name.startsWith('/') || name === '/' ||
             /[\x00-\x1f\x7f]/.test(name) || name.length > 4000 ||
-            name.endsWith('/') || /\.(raw|img|vhdx|vhd)$/i.test(name))
+            name.endsWith('/') || /\.(raw|img|vhdx|vhd|qcow2|vdi|vmdk)$/i.test(name))
             return '';
         return name + '.' + format;
     }
@@ -1790,7 +1790,7 @@
             valid() { return !!this.outputPath(); },
             problem() {
                 if (this.valid()) return '';
-                if (/\.(raw|img|vhdx|vhd)$/i.test(str(this.baseName).trim()))
+                if (/\.(raw|img|vhdx|vhd|qcow2|vdi|vmdk)$/i.test(str(this.baseName).trim()))
                     return 'Enter the filename without an extension; choose it from the dropdown.';
                 return 'Enter an absolute destination filename (without an extension).';
             },
@@ -2048,7 +2048,7 @@
 '              title="Select one file or folder. Folders download as ZIP archives."' +
 '              :disabled="!canDownload() || busy" @click="download()">Download</button>' +
 '      <button type="button" class="btn btn-sm" :class="vhdIsRunning() ? \'btn-danger\' : \'btn-primary\'"' +
-'              title="Export a bootable RAW disk by default (.vhdx/.vhd optional); click again to abort."' +
+'              title="Export a bootable disk (RAW, VHD, QCOW2, VDI, VMDK); click again to abort."' +
 '              :disabled="vhdStartPending || vhdAbortPending || vhdJob.state === \'cancelling\' || (!vhdIsRunning() && (!moment || busy))"' +
 '              @click="vhdIsRunning() ? abortVhdx() : createVhdx()"' +
 '              x-text="vhdJob.state === \'cancelling\' ? \'Aborting…\' : (vhdIsRunning() ? \'Abort disk\' : (vhdStartPending ? \'Starting…\' : \'Create disk…\'))"></button>' +
