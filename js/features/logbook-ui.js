@@ -1775,6 +1775,8 @@
             format: 'raw',
             _resolve: null,
             init() {
+                const element = root.document && root.document.getElementById(DISK_MODAL_ID);
+                if (element) element.addEventListener('hidden.bs.modal', () => this.cancel());
                 if (!root.addEventListener) return;
                 root.addEventListener('hangar:disk-export', (ev) => {
                     const o = (ev && ev.detail) || {};
